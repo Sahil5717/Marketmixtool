@@ -602,76 +602,36 @@ def get_model_health():
 
 # ═══ Frontend Serving ═══
 
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, FileResponse
+from starlette.staticfiles import StaticFiles
+
+# Serve JSX as static file
+frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
+if not os.path.isdir(frontend_dir):
+    frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
+if not os.path.isdir(frontend_dir):
+    frontend_dir = "/app/frontend"
+
+try:
+    app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
+except Exception:
+    pass
 
 @app.get("/app", response_class=HTMLResponse)
 def serve_frontend():
-    """Serve the React frontend with CDN dependencies."""
-    jsx_path = None
+    """Serve the React frontend."""
+    html_path = None
     for p in [
-        os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "app.jsx"),
-        os.path.join(os.path.dirname(__file__), "..", "frontend", "app.jsx"),
-        "/app/frontend/app.jsx",
+        os.path.join(frontend_dir, "index.html"),
+        os.path.join(os.path.dirname(__file__), "..", "frontend", "index.html"),
+        "/app/frontend/index.html",
     ]:
         if os.path.exists(p):
-            jsx_path = p
+            html_path = p
             break
     
-    if not jsx_path:
+    if not html_path:
         return HTMLResponse("<h1>Frontend not found</h1>", status_code=404)
     
-    with open(jsx_path, "r") as f:
-        jsx_code = f.read()
-    
-    # Strip ES module imports — CDN provides globals
-    lines = jsx_code.split("\n")
-    clean_lines = []
-    for line in lines:
-        if line.strip().startswith("import "):
-            continue  # Skip import statements
-        if line.strip().startswith("export default "):
-            line = line.replace("export default ", "")
-        clean_lines.append(line)
-    jsx_clean = "\n".join(clean_lines)
-    
-    html = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Yield Intelligence Platform</title>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-<script src="https://unpkg.com/@babel/standalone@7.24.0/babel.min.js"></script>
-<script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
-<script src="https://unpkg.com/lucide-react@0.383.0/dist/umd/lucide-react.js"></script>
-<style>body{margin:0;padding:0;background:#1A1A24}</style>
-</head>
-<body>
-<div id="root"></div>
-<script type="text/babel">
-// React hooks from global
-const { useState, useEffect, useMemo, useCallback, useRef } = React;
-// Recharts from global
-const { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, PieChart, Pie, Cell, ComposedChart, Area, Legend,
-  ReferenceLine, ScatterChart, Scatter } = Recharts;
-// Lucide icons from global
-const { Home, Database, Map: MapIcon, BarChart3, Search, Lightbulb, GitBranch,
-  Target, FileText, ChevronRight, ChevronDown, AlertTriangle, CheckCircle,
-  XCircle, TrendingUp, TrendingDown, DollarSign, Users, Activity, Zap,
-  ArrowUpRight, ArrowDownRight, ArrowRight, Filter, Upload, Play, Download,
-  Lock, Unlock, Plus, Trash2, Info, Check, X, UploadCloud, Shield, Eye,
-  RefreshCw, Layers, ChevronUp, Columns, FileSpreadsheet, BarChart2,
-  PieChart: PieIcon, ArrowDown, ArrowUp, Minus, Copy, Settings, Grid } = lucideReact;
-
-""" + jsx_clean + """
-
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(React.createElement(App));
-</script>
-</body>
-</html>"""
-    return HTMLResponse(html)
+    with open(html_path, "r") as f:
+        return HTMLResponse(f.read())

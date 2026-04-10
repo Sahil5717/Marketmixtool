@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Yield Intelligence Platform</title>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>body{margin:0;padding:0;background:#1A1A24;font-family:'Plus Jakarta Sans',system-ui,sans-serif}#loading{display:flex;align-items:center;justify-content:center;height:100vh;color:#FFE600;flex-direction:column;gap:16px}#loading .spin{animation:spin 1s linear infinite}@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}#error{display:none;color:#ef4444;padding:40px;text-align:center;font-size:14px}</style>
+</head>
+<body>
+<div id="root">
+<div id="loading">
+<svg class="spin" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+<div style="color:#9CA3AF;font-size:13px">Loading Yield Intelligence Platform...</div>
+</div>
+</div>
+<div id="error"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.24.0/babel.min.js"></script>
+<script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+<script src="https://unpkg.com/lucide-react@0.383.0/dist/umd/lucide-react.js"></script>
+
+<script>
+// Wait for all scripts to load, then load the app
+window.addEventListener('load', function() {
+  // Set up globals that the JSX expects
+  window._GLOBALS_READY = true;
+  
+  // Fetch the JSX file
+  fetch('/static/app.jsx')
+    .then(r => r.text())
+    .then(jsx => {
+      // Strip ES module imports - CDN provides globals
+      var clean = jsx
+        .replace(/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];?\s*$/gm, '')
+        .replace(/^import\s+\*[^;]+;?\s*$/gm, '')
+        .replace(/^import\s+\w+[^;]+;?\s*$/gm, '')
+        .replace('export default function App', 'function App');
+      
+      // Prepend global destructuring
+      var globals = `
+        const { useState, useEffect, useMemo, useCallback, useRef } = React;
+        const { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+          ResponsiveContainer, PieChart, Pie, Cell, ComposedChart, Area, Legend,
+          ReferenceLine, ScatterChart, Scatter } = Recharts;
+        const lucide = window.lucideReact || window.LucideReact || window.lucide || {};
+        const Home = lucide.Home || function(){return null};
+        const Database = lucide.Database || function(){return null};
+        const MapIcon = lucide.Map || function(){return null};
+        const BarChart3 = lucide.BarChart3 || lucide.BarChart2 || function(){return null};
+        const Search = lucide.Search || function(){return null};
+        const Lightbulb = lucide.Lightbulb || function(){return null};
+        const GitBranch = lucide.GitBranch || function(){return null};
+        const Target = lucide.Target || function(){return null};
+        const FileText = lucide.FileText || function(){return null};
+        const ChevronRight = lucide.ChevronRight || function(){return null};
+        const ChevronDown = lucide.ChevronDown || function(){return null};
+        const ChevronUp = lucide.ChevronUp || function(){return null};
+        const AlertTriangle = lucide.AlertTriangle || function(){return null};
+        const CheckCircle = lucide.CheckCircle || function(){return null};
+        const XCircle = lucide.XCircle || function(){return null};
+        const TrendingUp = lucide.TrendingUp || function(){return null};
+        const TrendingDown = lucide.TrendingDown || function(){return null};
+        const DollarSign = lucide.DollarSign || function(){return null};
+        const Users = lucide.Users || function(){return null};
+        const Activity = lucide.Activity || function(){return null};
+        const Zap = lucide.Zap || function(){return null};
+        const ArrowUpRight = lucide.ArrowUpRight || function(){return null};
+        const ArrowDownRight = lucide.ArrowDownRight || function(){return null};
+        const ArrowRight = lucide.ArrowRight || function(){return null};
+        const ArrowDown = lucide.ArrowDown || function(){return null};
+        const ArrowUp = lucide.ArrowUp || function(){return null};
+        const Filter = lucide.Filter || function(){return null};
+        const Upload = lucide.Upload || function(){return null};
+        const Play = lucide.Play || function(){return null};
+        const Download = lucide.Download || function(){return null};
+        const Lock = lucide.Lock || function(){return null};
+        const Unlock = lucide.Unlock || function(){return null};
+        const Plus = lucide.Plus || function(){return null};
+        const Trash2 = lucide.Trash2 || function(){return null};
+        const Info = lucide.Info || function(){return null};
+        const Check = lucide.Check || function(){return null};
+        const X = lucide.X || function(){return null};
+        const UploadCloud = lucide.UploadCloud || function(){return null};
+        const Shield = lucide.Shield || function(){return null};
+        const Eye = lucide.Eye || function(){return null};
+        const RefreshCw = lucide.RefreshCw || function(){return null};
+        const Layers = lucide.Layers || function(){return null};
+        const Columns = lucide.Columns || function(){return null};
+        const FileSpreadsheet = lucide.FileSpreadsheet || function(){return null};
+        const BarChart2 = lucide.BarChart2 || function(){return null};
+        const PieIcon = lucide.PieChart || function(){return null};
+        const Minus = lucide.Minus || function(){return null};
+        const Copy = lucide.Copy || function(){return null};
+        const Settings = lucide.Settings || function(){return null};
+        const Grid = lucide.Grid || lucide.LayoutGrid || function(){return null};
+        const Gauge = lucide.Gauge || function(){return null};
+      `;
+      
+      var fullCode = globals + '\n' + clean + '\n\nconst root = ReactDOM.createRoot(document.getElementById("root"));\nroot.render(React.createElement(App));';
+      
+      // Transpile with Babel
+      try {
+        var output = Babel.transform(fullCode, { presets: ['react'] }).code;
+        var script = document.createElement('script');
+        script.textContent = output;
+        document.body.appendChild(script);
+      } catch(e) {
+        document.getElementById('error').style.display = 'block';
+        document.getElementById('error').innerHTML = '<h2>JSX Compilation Error</h2><pre>' + e.message + '</pre>';
+        document.getElementById('loading').style.display = 'none';
+        console.error('Babel error:', e);
+      }
+    })
+    .catch(function(err) {
+      document.getElementById('error').style.display = 'block';
+      document.getElementById('error').innerHTML = '<h2>Failed to load app</h2><p>' + err.message + '</p>';
+      document.getElementById('loading').style.display = 'none';
+    });
+});
+</script>
+</body>
+</html>
