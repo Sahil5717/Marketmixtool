@@ -1,0 +1,3 @@
+date,channel,campaign,region,product,spend,impressions,clicks,leads,mqls,sqls,conversions,revenue,bounce_rate,avg_session_duration_sec,form_completion_rate,nps_score
+2025-01-01,paid_search,Campaign_Name_Here,North,Product_A,10000,80000,3600,252,113,43,12,4560,0.38,145,0.12,35
+2025-01-01,social_paid,Campaign_Name_Here,North,Product_A,8000,120000,1440,101,45,17,5,1300,0.55,85,0.06,28
