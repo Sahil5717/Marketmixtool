@@ -229,7 +229,7 @@ const FN=ch=>CH[ch]?.label||ch?.replace(/_/g," ")||"";
    APP
    ══════════════════════════════════════ */
 export default function App(){
-const[tab,setTab]=useState("home");const[D,setD]=useState(null);const[loading,setL]=useState(true);
+const[tab,setTab]=useState("data");const[D,setD]=useState(null);const[loading,setL]=useState(false);
 const[atM,setAtM]=useState("linear");const[selCh,setSelCh]=useState(null);const[selCp,setSelCp]=useState(null);
 const[bM,setBM]=useState(1);const[obj,setObj]=useState("balanced");
 const[fl,setFl]=useState({reg:"All",prod:"All",ct:"All",q:"All"});
@@ -352,10 +352,13 @@ const xCh=useMemo(()=>{if(!D)return[];const paths={};D.js.filter(j=>j.cv&&j.nt>1
 
 if(loading)return<div style={{height:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#1A1A24",color:"#FFE600",fontFamily:"'Plus Jakarta Sans',system-ui"}}><div style={{textAlign:"center"}}><RefreshCw size={32} style={{animation:"spin 1s linear infinite"}}/><div style={{marginTop:16,fontSize:13,color:"#6B7280"}}>Initializing Yield Intelligence engines...</div><style>{`@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}`}</style></div></div>;
 
+/* Guard: if no data loaded, force data tab */
+const activeTab=(!D&&tab!=="data"&&tab!=="mapping")?"data":tab;
+
 const TABS=[{id:"home",i:Home,l:"Executive",roles:["executive","analyst","planner","admin"]},{id:"data",i:Database,l:"Data",roles:["analyst","admin"]},{id:"mapping",i:MapIcon,l:"Mapping",roles:["analyst","admin"]},{id:"performance",i:BarChart3,l:"Performance",roles:["executive","analyst","planner"]},{id:"deepdive",i:Search,l:"Deep Dive",roles:["analyst","planner"]},{id:"pillars",i:AlertTriangle,l:"Leakage",roles:["executive","analyst"]},{id:"recommendations",i:Lightbulb,l:"Actions",roles:["executive","analyst"]},{id:"scenarios",i:GitBranch,l:"Scenarios",roles:["planner","analyst"]},{id:"optimizer",i:Target,l:"Optimizer",roles:["planner","analyst"]},{id:"business",i:FileText,l:"Business Case",roles:["executive","analyst","planner"]}];
 const visibleTabs=TABS.filter(t=>t.roles.includes(role));
 
-const gated=!dataOk&&!["home","data"].includes(tab);
+const gated=!dataOk&&!["home","data"].includes(activeTab);
 const C=({children,style:s,...p})=><div style={{background:"#22222E",borderRadius:8,padding:14,border:"1px solid #2E2E3E",...s}} {...p}>{children}</div>;
 const K=({l,v,a="#FFE600",sub,onClick})=><C style={{cursor:onClick?"pointer":"default",position:"relative",overflow:"hidden",paddingLeft:18}} onClick={onClick}><div style={{position:"absolute",top:0,left:0,width:3,height:"100%",background:a}}/><div style={{fontSize:9,color:"#6B7280",textTransform:"uppercase",letterSpacing:1,fontWeight:600,marginBottom:3}}>{l}</div><div style={{fontSize:18,fontWeight:800,color:"#F3F4F6",letterSpacing:-.5}}>{v}</div>{sub&&<div style={{fontSize:10,color:sub.c||"#6B7280",marginTop:2}}>{sub.t}</div>}</C>;
 const B=({children,c="#FFE600"})=><span style={{display:"inline-flex",padding:"1px 7px",borderRadius:3,background:`${c}15`,color:c,fontSize:9,fontWeight:700,letterSpacing:.5}}>{children}</span>;
@@ -385,7 +388,7 @@ return(<div style={{minHeight:"100vh",background:"#1A1A24",color:"#E5E7EB",fontF
 {/* NAV */}
 <div style={{background:"#1F1F2B",borderBottom:"1px solid #2E2E3E",overflowX:"auto"}}>
 <div style={{maxWidth:1400,margin:"0 auto",padding:"0 20px",display:"flex",gap:0}}>
-{visibleTabs.map(t=><button key={t.id} onClick={()=>setTab(t.id)} style={{display:"flex",alignItems:"center",gap:5,padding:"9px 12px",border:"none",background:tab===t.id?"#FFE60012":"transparent",color:tab===t.id?"#FFE600":"#6B7280",cursor:"pointer",fontSize:10,fontWeight:tab===t.id?700:500,borderBottom:tab===t.id?"2px solid #FFE600":"2px solid transparent",whiteSpace:"nowrap",fontFamily:"inherit"}}><t.i size={13}/>{t.l}</button>)}
+{visibleTabs.map(t=><button key={t.id} onClick={()=>setTab(t.id)} style={{display:"flex",alignItems:"center",gap:5,padding:"9px 12px",border:"none",background:activeTab===t.id?"#FFE60012":"transparent",color:activeTab===t.id?"#FFE600":"#6B7280",cursor:"pointer",fontSize:10,fontWeight:activeTab===t.id?700:500,borderBottom:activeTab===t.id?"2px solid #FFE600":"2px solid transparent",whiteSpace:"nowrap",fontFamily:"inherit"}}><t.i size={13}/>{t.l}</button>)}
 </div></div>
 
 {/* FILTERS */}
@@ -402,7 +405,7 @@ return(<div style={{minHeight:"100vh",background:"#1A1A24",color:"#E5E7EB",fontF
 {recalc&&<div style={{background:"#FFE60015",border:"1px solid #FFE60030",borderRadius:6,padding:"8px 12px",marginBottom:12,display:"flex",alignItems:"center",gap:8,fontSize:11,color:"#FFE600"}}><RefreshCw size={12} style={{animation:"spin 1s linear infinite"}}/>Recalculating all downstream metrics...</div>}
 
 {/* ═══ HOME ═══ */}
-{tab==="home"&&<>
+{activeTab==="home"&&<>
 <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginBottom:16}}>
 <div><h2 style={{fontSize:20,fontWeight:800,letterSpacing:-.5}}>Executive Dashboard</h2><p style={{color:"#6B7280",fontSize:11,marginTop:3}}>FY 2025 · All Channels</p></div>
 <NB l="View Performance" onClick={()=>setTab("performance")}/>
@@ -425,7 +428,7 @@ return(<div style={{minHeight:"100vh",background:"#1A1A24",color:"#E5E7EB",fontF
 </>}
 
 {/* ═══ DATA ═══ */}
-{tab==="data"&&<>
+{activeTab==="data"&&<>
 <h2 style={{fontSize:20,fontWeight:800,marginBottom:12}}>Data Readiness</h2>
 <Tip>Upload your campaign performance CSV and optionally user journey CSV. Required columns: date, channel, campaign, spend, revenue.</Tip>
 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
@@ -471,7 +474,7 @@ return(<div style={{minHeight:"100vh",background:"#1A1A24",color:"#E5E7EB",fontF
 </>}
 
 {/* ═══ MAPPING ═══ */}
-{tab==="mapping"&&<>
+{activeTab==="mapping"&&<>
 <h2 style={{fontSize:20,fontWeight:800,marginBottom:12}}>Column Mapping & Taxonomy</h2>
 <Tip>Review auto-detected mappings below. Use dropdowns to reassign columns. Unmapped required fields block analysis.</Tip>
 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
@@ -507,7 +510,7 @@ return(unmapped.length>0||unmappedCh.length>0)?<C style={{marginBottom:12}}><div
 </>}
 
 {/* ═══ PERFORMANCE ═══ */}
-{tab==="performance"&&<>
+{activeTab==="performance"&&<>
 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
 <h2 style={{fontSize:20,fontWeight:800}}>Performance Analysis</h2>
 <div style={{display:"flex",gap:3}}>{[["last_touch","Last Touch"],["linear","Linear"],["position_based","Position"],["markov","Markov"]].map(([k,l])=><Btn key={k} primary={atM===k} onClick={()=>setAtM(k)}>{l}</Btn>)}</div>
@@ -589,7 +592,7 @@ return(unmapped.length>0||unmappedCh.length>0)?<C style={{marginBottom:12}}><div
 </>}
 
 {/* ═══ DEEP DIVE ═══ */}
-{tab==="deepdive"&&<>
+{activeTab==="deepdive"&&<>
 <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
 <h2 style={{fontSize:20,fontWeight:800}}>Deep Dive</h2>
 <select value={selCh||""} onChange={e=>{setSelCh(e.target.value);setSelCp(null)}}><option value="">Channel...</option>{Object.keys(CH).map(ch=><option key={ch} value={ch}>{FN(ch)}</option>)}</select>
@@ -661,7 +664,7 @@ return<>
 </>}
 
 {/* ═══ PILLARS ═══ */}
-{tab==="pillars"&&<>
+{activeTab==="pillars"&&<>
 <h2 style={{fontSize:20,fontWeight:800,marginBottom:12}}>Leakage, Experience & Avoidable Cost</h2>
 <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:12}}>
 <K l="Total at Risk" v={F(D.pl.totalRisk)} a="#ef4444"/><K l="Rev Leakage" v={F(D.pl.leak.total)} a="#ef4444" sub={{t:`${D.pl.leak.pct.toFixed(1)}%`,c:"#6B7280"}}/><K l="CX Suppression" v={F(D.pl.exp.total)} a="#d97706" sub={{t:`${D.pl.exp.items.length} campaigns`,c:"#6B7280"}}/><K l="Avoidable Cost" v={F(D.pl.cost.total)} a="#7c3aed" sub={{t:`${D.pl.cost.items.length} drivers`,c:"#6B7280"}}/>
@@ -721,7 +724,7 @@ return items.slice(0,8).map((it,i)=><tr key={i}><td style={{color:CH[it.ch]?.col
 </>}
 
 {/* ═══ RECOMMENDATIONS ═══ */}
-{tab==="recommendations"&&<>
+{activeTab==="recommendations"&&<>
 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
 <div><h2 style={{fontSize:20,fontWeight:800}}>Recommendations</h2><p style={{color:"#6B7280",fontSize:10}}>{recs.length} actions · {recs.filter(r=>r.status==="approved").length} approved · Impact: {F(recs.filter(r=>r.status==="approved").reduce((a,r)=>a+Math.abs(r.impact||0),0))}</p></div>
 <div style={{display:"flex",gap:6}}>
@@ -754,7 +757,7 @@ return items.slice(0,8).map((it,i)=><tr key={i}><td style={{color:CH[it.ch]?.col
 </>}
 
 {/* ═══ SCENARIOS ═══ */}
-{tab==="scenarios"&&<>
+{activeTab==="scenarios"&&<>
 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
 <h2 style={{fontSize:20,fontWeight:800}}>Scenario Planner</h2>
 <Btn onClick={()=>{const o=optim(D.curves,D.tS);setScn(s=>[...s,{id:`c_${Date.now()}`,name:`Custom ${scn.length-2}`,budget:D.tS,obj:"balanced",opt:o,locked:false}])}}><Plus size={11}/>New Scenario</Btn>
@@ -779,7 +782,7 @@ return items.slice(0,8).map((it,i)=><tr key={i}><td style={{color:CH[it.ch]?.col
 </>}
 
 {/* ═══ OPTIMIZER ═══ */}
-{tab==="optimizer"&&<>
+{activeTab==="optimizer"&&<>
 <h2 style={{fontSize:20,fontWeight:800,marginBottom:12}}>Budget Optimization</h2>
 <div style={{display:"grid",gridTemplateColumns:"220px 1fr",gap:12}}>
 <div>
@@ -827,7 +830,7 @@ return items.slice(0,8).map((it,i)=><tr key={i}><td style={{color:CH[it.ch]?.col
 </>}
 
 {/* ═══ BUSINESS CASE ═══ */}
-{tab==="business"&&<>
+{activeTab==="business"&&<>
 <h2 style={{fontSize:20,fontWeight:800,marginBottom:12}}>Business Case & Value Realization</h2>
 <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:12}}>
 <K l="Rev Uplift" v={F(D.opt.summary.oRev-D.opt.summary.cRev)} a="#10b981" sub={{t:FP(D.opt.summary.uplift),c:D.opt.summary.uplift>0?"#10b981":"#ef4444"}}/><K l="Value at Risk" v={F(D.pl.totalRisk)} a="#ef4444"/><K l="ROI Change" v={`${FX(D.opt.summary.cROI)}→${FX(D.opt.summary.oROI)}`} a="#FFE600"/><K l="Recoverable" v={F(D.pl.leak.total*.6+D.pl.exp.total*.4+D.pl.cost.total*.7)} a="#10b981"/>
