@@ -85,6 +85,17 @@ FileSpreadsheet:MI('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0
 BarChart2:MI('<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>'),
 PieIcon:MI('<path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/>'),
 Gauge:MI('<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>'),
+AlertCircle:MI('<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>'),
+Award:MI('<circle cx="12" cy="8" r="7"/><polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88"/>'),
+ExternalLink:MI('<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>'),
+Globe:MI('<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>'),
+Mail:MI('<path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22 6 12 13 2 6"/>'),
+MapPin:MI('<path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>'),
+Megaphone:MI('<path d="M3 11l18-5v12L3 13v-2z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/>'),
+Monitor:MI('<rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>'),
+Phone:MI('<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>'),
+Radio:MI('<circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/>'),
+Tv:MI('<rect x="2" y="7" width="20" height="15" rx="2"/><polyline points="17 2 12 7 7 2"/>'),
 };
 </script>
 <script>
@@ -99,7 +110,7 @@ if(!r.ok)throw new Error('HTTP '+r.status);return r.text()
 var clean=jsx.replace(/^import\s+.+$/gm,'').replace('export default function App','function App');
 var g='const{useState,useEffect,useMemo,useCallback,useRef}=React;\n'+
 'const{BarChart,Bar,LineChart,Line,XAxis,YAxis,CartesianGrid,Tooltip,ResponsiveContainer,PieChart,Pie,Cell,ComposedChart,Area,Legend,ReferenceLine,ScatterChart,Scatter}=Recharts;\n'+
-'const _i=window._i;const Home=_i.Home,Database=_i.Database,MapIcon=_i.MapIcon,BarChart3=_i.BarChart3,Search=_i.Search,Lightbulb=_i.Lightbulb,GitBranch=_i.GitBranch,Target=_i.Target,FileText=_i.FileText,ChevronRight=_i.ChevronRight,ChevronDown=_i.ChevronDown,ChevronUp=_i.ChevronUp,AlertTriangle=_i.AlertTriangle,CheckCircle=_i.CheckCircle,XCircle=_i.XCircle,TrendingUp=_i.TrendingUp,TrendingDown=_i.TrendingDown,DollarSign=_i.DollarSign,Users=_i.Users,Activity=_i.Activity,Zap=_i.Zap,ArrowUpRight=_i.ArrowUpRight,ArrowDownRight=_i.ArrowDownRight,ArrowRight=_i.ArrowRight,ArrowDown=_i.ArrowDown,ArrowUp=_i.ArrowUp,Filter=_i.Filter,Upload=_i.Upload,UploadCloud=_i.UploadCloud,Play=_i.Play,Download=_i.Download,Lock=_i.Lock,Unlock=_i.Unlock,Plus=_i.Plus,Trash2=_i.Trash2,Info=_i.Info,Check=_i.Check,X=_i.X,Shield=_i.Shield,Eye=_i.Eye,RefreshCw=_i.RefreshCw,Layers=_i.Layers,Columns=_i.Columns,Minus=_i.Minus,Copy=_i.Copy,Settings=_i.Settings,Grid=_i.Grid,FileSpreadsheet=_i.FileSpreadsheet,BarChart2=_i.BarChart2,PieIcon=_i.PieIcon,Gauge=_i.Gauge;\n';
+'const _i=window._i;const Home=_i.Home,Database=_i.Database,MapIcon=_i.MapIcon,BarChart3=_i.BarChart3,Search=_i.Search,Lightbulb=_i.Lightbulb,GitBranch=_i.GitBranch,Target=_i.Target,FileText=_i.FileText,ChevronRight=_i.ChevronRight,ChevronDown=_i.ChevronDown,ChevronUp=_i.ChevronUp,AlertTriangle=_i.AlertTriangle,CheckCircle=_i.CheckCircle,XCircle=_i.XCircle,TrendingUp=_i.TrendingUp,TrendingDown=_i.TrendingDown,DollarSign=_i.DollarSign,Users=_i.Users,Activity=_i.Activity,Zap=_i.Zap,ArrowUpRight=_i.ArrowUpRight,ArrowDownRight=_i.ArrowDownRight,ArrowRight=_i.ArrowRight,ArrowDown=_i.ArrowDown,ArrowUp=_i.ArrowUp,Filter=_i.Filter,Upload=_i.Upload,UploadCloud=_i.UploadCloud,Play=_i.Play,Download=_i.Download,Lock=_i.Lock,Unlock=_i.Unlock,Plus=_i.Plus,Trash2=_i.Trash2,Info=_i.Info,Check=_i.Check,X=_i.X,Shield=_i.Shield,Eye=_i.Eye,RefreshCw=_i.RefreshCw,Layers=_i.Layers,Columns=_i.Columns,Minus=_i.Minus,Copy=_i.Copy,Settings=_i.Settings,Grid=_i.Grid,FileSpreadsheet=_i.FileSpreadsheet,BarChart2=_i.BarChart2,PieIcon=_i.PieIcon,Gauge=_i.Gauge,Award=_i.Award,AlertCircle=_i.AlertCircle,Globe=_i.Globe,Mail=_i.Mail,MapPin=_i.MapPin,Megaphone=_i.Megaphone,Monitor=_i.Monitor,Phone=_i.Phone,Radio=_i.Radio,Tv=_i.Tv,ExternalLink=_i.ExternalLink;\n';
 var full=g+clean+'\nReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));';
 try{
 var out=Babel.transform(full,{presets:['react']}).code;

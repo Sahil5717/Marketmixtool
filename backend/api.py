@@ -403,7 +403,7 @@ def get_full_state():
     
     # Build optimizer in frontend shape
     opt_data = None
-    if _state["optimization"]:
+    if _state["optimization"] and "summary" in _state["optimization"]:
         opt = _state["optimization"]
         opt_channels = [{"channel":c["channel"], "cS":round(c.get("current_spend",0)),
             "oS":round(c.get("optimized_spend",0)), "chg":round(c.get("change_pct",0),1),
@@ -412,11 +412,12 @@ def get_full_state():
             "cROI":round(c.get("current_roi",0),3), "oROI":round(c.get("optimized_roi",0),3),
             "mROI":round(c.get("marginal_roi",0),4), "locked":c.get("locked",False)}
             for c in opt.get("channels",[])]
-        opt_summary = {"cRev":round(opt["summary"].get("current_revenue",0)),
-            "oRev":round(opt["summary"].get("optimized_revenue",0)),
-            "uplift":round(opt["summary"].get("uplift_pct",0),2),
-            "cROI":round(opt["summary"].get("current_roi",0),3),
-            "oROI":round(opt["summary"].get("optimized_roi",0),3)}
+        sm = opt.get("summary",{})
+        opt_summary = {"cRev":round(sm.get("current_revenue",0)),
+            "oRev":round(sm.get("optimized_revenue",0)),
+            "uplift":round(sm.get("uplift_pct",0),2),
+            "cROI":round(sm.get("current_roi",0),3),
+            "oROI":round(sm.get("optimized_roi",0),3)}
         opt_data = {"channels":opt_channels, "summary":opt_summary}
     
     # Build pillars in frontend shape
@@ -472,8 +473,8 @@ def get_full_state():
     
     return _j({
         "rows": rows,
-        "opt": opt_data,
-        "pl": pl_data,
+        "opt": opt_data or {"channels":[],"summary":{"cRev":0,"oRev":0,"uplift":0,"cROI":0,"oROI":0}},
+        "pl": pl_data or {"leak":{"total":0,"pct":0,"byCh":[]},"exp":{"total":0,"items":[]},"cost":{"total":0,"items":[]},"totalRisk":0},
         "attr": attr_data,
         "curves": curves_data,
         "tS": tS,
