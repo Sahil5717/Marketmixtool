@@ -1,233 +1,144 @@
 """
-Time-Series Forecasting Engine (Phase 2)
-Prophet and ARIMA models for next-year revenue/spend/conversion prediction.
+Forecasting Engine — Production Grade
+=======================================
+1. Prophet (primary) — handles seasonality, holidays, trend changepoints
+2. ARIMA (secondary) — classical time-series via statsmodels
+3. Linear fallback — simple trend + seasonal for when libraries unavailable
 
-Two methods:
-1. Prophet (preferred) — handles seasonality, holidays, trend changes
-2. ARIMA (fallback) — classical time-series via statsmodels
+Libraries: prophet, statsmodels (ARIMA, ADF test), scikit-learn (metrics), numpy, pandas
 """
-
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Optional
-import warnings
+from typing import Dict, Optional
+from sklearn.metrics import r2_score, mean_absolute_percentage_error
+import warnings, logging
 warnings.filterwarnings("ignore")
+logger = logging.getLogger(__name__)
 
-
-def forecast_prophet(
-    df: pd.DataFrame,
-    metric: str = "revenue",
-    periods: int = 12,
-    freq: str = "MS",
-) -> Dict:
-    """
-    Forecast using Facebook Prophet.
-    Returns point forecast + confidence intervals.
-    """
+def forecast_prophet(df, metric="revenue", periods=12):
+    """Prophet forecast with seasonality, trend changepoints, and uncertainty intervals."""
     try:
         from prophet import Prophet
-        
-        # Prepare data
-        monthly = df.groupby("month" if "month" in df.columns else "date").agg(
-            **{metric: (metric, "sum")}
-        ).reset_index()
-        
-        time_col = "month" if "month" in df.columns else "date"
-        prophet_df = pd.DataFrame({
-            "ds": pd.to_datetime(monthly[time_col]),
-            "y": monthly[metric].values,
-        })
-        
-        # Fit model
-        model = Prophet(
-            yearly_seasonality=True,
-            weekly_seasonality=False,
-            daily_seasonality=False,
-            changepoint_prior_scale=0.05,
-            seasonality_prior_scale=10,
-        )
-        model.fit(prophet_df)
-        
-        # Forecast
-        future = model.make_future_dataframe(periods=periods, freq=freq)
-        forecast = model.predict(future)
-        
-        # Extract results
-        historical = forecast[forecast["ds"].isin(prophet_df["ds"])]
-        future_only = forecast[~forecast["ds"].isin(prophet_df["ds"])]
-        
-        return {
-            "method": "prophet",
-            "metric": metric,
-            "historical": {
-                "dates": prophet_df["ds"].dt.strftime("%Y-%m").tolist(),
-                "actual": prophet_df["y"].tolist(),
-                "fitted": historical["yhat"].tolist(),
-            },
-            "forecast": {
-                "dates": future_only["ds"].dt.strftime("%Y-%m").tolist(),
-                "predicted": future_only["yhat"].tolist(),
-                "lower": future_only["yhat_lower"].tolist(),
-                "upper": future_only["yhat_upper"].tolist(),
-            },
-            "summary": {
-                "forecast_total": round(float(future_only["yhat"].sum()), 0),
-                "forecast_lower": round(float(future_only["yhat_lower"].sum()), 0),
-                "forecast_upper": round(float(future_only["yhat_upper"].sum()), 0),
-                "historical_total": round(float(prophet_df["y"].sum()), 0),
-                "yoy_change_pct": round(
-                    (future_only["yhat"].sum() - prophet_df["y"].sum()) / prophet_df["y"].sum() * 100, 1
-                ),
-                "periods_forecast": periods,
-            },
-        }
-    except Exception as e:
-        print(f"Prophet failed: {e}")
-        return forecast_arima(df, metric, periods)
+    except ImportError:
+        raise ImportError("prophet not installed — pip install prophet")
 
+    time_col = "month" if "month" in df.columns else "date"
+    monthly = df.groupby(time_col)[metric].sum().reset_index()
+    monthly.columns = ["ds", "y"]
+    monthly["ds"] = pd.to_datetime(monthly["ds"])
 
-def forecast_arima(
-    df: pd.DataFrame,
-    metric: str = "revenue",
-    periods: int = 12,
-) -> Dict:
-    """
-    Forecast using ARIMA via statsmodels.
-    Fallback when Prophet is unavailable.
-    """
+    model = Prophet(yearly_seasonality=True, weekly_seasonality=False, daily_seasonality=False,
+                    changepoint_prior_scale=0.05, seasonality_prior_scale=10, interval_width=0.9)
+    model.fit(monthly)
+
+    future = model.make_future_dataframe(periods=periods, freq="MS")
+    forecast = model.predict(future)
+
+    hist = forecast[forecast["ds"].isin(monthly["ds"])]
+    fut = forecast[~forecast["ds"].isin(monthly["ds"])]
+
+    # In-sample metrics
+    y_actual = monthly["y"].values; y_fitted = hist["yhat"].values[:len(y_actual)]
+    r2 = r2_score(y_actual, y_fitted) if len(y_actual) == len(y_fitted) else None
+    mape = mean_absolute_percentage_error(y_actual, y_fitted) * 100 if len(y_actual) == len(y_fitted) else None
+
+    return {
+        "method": "prophet", "metric": metric,
+        "historical": {"dates": monthly["ds"].dt.strftime("%Y-%m").tolist(), "actual": monthly["y"].tolist(),
+                        "fitted": y_fitted.tolist()},
+        "forecast": {"dates": fut["ds"].dt.strftime("%Y-%m").tolist(),
+                      "predicted": fut["yhat"].round(0).tolist(),
+                      "lower": fut["yhat_lower"].round(0).tolist(),
+                      "upper": fut["yhat_upper"].round(0).tolist()},
+        "summary": {"historical_total": round(float(monthly["y"].sum()), 0),
+                     "forecast_total": round(float(fut["yhat"].sum()), 0),
+                     "yoy_pct": round((fut["yhat"].sum() - monthly["y"].sum()) / max(monthly["y"].sum(), 1) * 100, 1)},
+        "diagnostics": {"r_squared": round(float(r2), 4) if r2 else None,
+                         "mape": round(float(mape), 2) if mape else None,
+                         "n_changepoints": len(model.changepoints)},
+    }
+
+def forecast_arima(df, metric="revenue", periods=12):
+    """ARIMA forecast via statsmodels. Auto-selects order via ADF stationarity test."""
     try:
         from statsmodels.tsa.arima.model import ARIMA
         from statsmodels.tsa.stattools import adfuller
-        
-        monthly = df.groupby("month" if "month" in df.columns else "date").agg(
-            **{metric: (metric, "sum")}
-        ).reset_index().sort_values("month" if "month" in df.columns else "date")
-        
-        y = monthly[metric].values
-        
-        # Check stationarity
-        adf_result = adfuller(y)
-        d = 0 if adf_result[1] < 0.05 else 1
-        
-        # Fit ARIMA(1,d,1) — simple but robust
-        model = ARIMA(y, order=(1, d, 1))
-        fitted = model.fit()
-        
-        # Forecast
-        forecast_result = fitted.get_forecast(steps=periods)
-        pred_mean = forecast_result.predicted_mean
-        conf_int = forecast_result.conf_int(alpha=0.2)
-        
-        time_col = "month" if "month" in df.columns else "date"
-        dates = monthly[time_col].tolist()
-        
-        # Generate future dates
-        last_date = pd.to_datetime(dates[-1])
-        future_dates = pd.date_range(last_date + pd.DateOffset(months=1), periods=periods, freq="MS")
-        
-        return {
-            "method": "arima",
-            "metric": metric,
-            "historical": {
-                "dates": [str(d) for d in dates],
-                "actual": y.tolist(),
-                "fitted": fitted.fittedvalues.tolist(),
-            },
-            "forecast": {
-                "dates": future_dates.strftime("%Y-%m").tolist(),
-                "predicted": pred_mean.tolist(),
-                "lower": conf_int.iloc[:, 0].tolist(),
-                "upper": conf_int.iloc[:, 1].tolist(),
-            },
-            "summary": {
-                "forecast_total": round(float(pred_mean.sum()), 0),
-                "forecast_lower": round(float(conf_int.iloc[:, 0].sum()), 0),
-                "forecast_upper": round(float(conf_int.iloc[:, 1].sum()), 0),
-                "historical_total": round(float(y.sum()), 0),
-                "yoy_change_pct": round((pred_mean.sum() - y.sum()) / y.sum() * 100, 1),
-                "periods_forecast": periods,
-                "aic": round(float(fitted.aic), 1),
-            },
-        }
-    except Exception as e:
-        # Ultimate fallback: simple trend extrapolation
-        return _simple_forecast(df, metric, periods, str(e))
+    except ImportError:
+        raise ImportError("statsmodels not installed")
 
+    time_col = "month" if "month" in df.columns else "date"
+    monthly = df.groupby(time_col)[metric].sum().reset_index().sort_values(time_col)
+    y = monthly[metric].values.astype(float)
 
-def _simple_forecast(df, metric, periods, error_msg):
-    """Linear trend extrapolation as last resort."""
-    monthly = df.groupby("month" if "month" in df.columns else "date").agg(
-        **{metric: (metric, "sum")}
-    ).reset_index().sort_values("month" if "month" in df.columns else "date")
-    
-    y = monthly[metric].values
-    x = np.arange(len(y))
-    slope, intercept = np.polyfit(x, y, 1)
-    
-    future_x = np.arange(len(y), len(y) + periods)
-    predicted = slope * future_x + intercept
-    
+    # ADF test for stationarity
+    adf_result = adfuller(y)
+    is_stationary = adf_result[1] < 0.05
+    d = 0 if is_stationary else 1
+
+    # Fit ARIMA(2, d, 1) — reasonable default for monthly marketing data
+    model = ARIMA(y, order=(2, d, 1))
+    fitted = model.fit()
+    fc = np.array(fitted.forecast(steps=periods))
+    y_pred = np.array(fitted.fittedvalues)
+
+    r2 = r2_score(y[d:], y_pred[d:]) if len(y[d:]) == len(y_pred[d:]) and len(y[d:]) > 1 else None
+    try:
+        conf = np.array(fitted.get_forecast(steps=periods).conf_int(alpha=0.1))
+        lower = np.round(conf[:, 0]).tolist()
+        upper = np.round(conf[:, 1]).tolist()
+    except Exception:
+        lower = (fc * 0.85).round(0).tolist()
+        upper = (fc * 1.15).round(0).tolist()
+
     return {
-        "method": "linear_trend_fallback",
-        "metric": metric,
-        "historical": {"dates": monthly.iloc[:, 0].tolist(), "actual": y.tolist(), "fitted": (slope * x + intercept).tolist()},
-        "forecast": {
-            "dates": [f"2026-{str(i+1).padStart(2,'0')}" for i in range(periods)],
-            "predicted": predicted.tolist(),
-            "lower": (predicted * 0.85).tolist(),
-            "upper": (predicted * 1.15).tolist(),
-        },
-        "summary": {
-            "forecast_total": round(float(predicted.sum()), 0),
-            "historical_total": round(float(y.sum()), 0),
-            "yoy_change_pct": round((predicted.sum() - y.sum()) / y.sum() * 100, 1),
-            "fallback_reason": error_msg,
-        },
+        "method": "arima", "order": f"({2},{d},{1})", "metric": metric,
+        "historical": {"actual": y.tolist(), "fitted": y_pred.tolist()},
+        "forecast": {"predicted": np.round(fc).tolist(), "lower": lower, "upper": upper},
+        "summary": {"historical_total": round(float(y.sum()), 0),
+                     "forecast_total": round(float(fc.sum()), 0),
+                     "yoy_pct": round((fc.sum()-y.sum())/max(y.sum(),1)*100, 1)},
+        "diagnostics": {"r_squared": round(float(r2), 4) if r2 else None,
+                         "aic": round(float(fitted.aic), 1),
+                         "bic": round(float(fitted.bic), 1),
+                         "is_stationary": is_stationary, "adf_pvalue": round(float(adf_result[1]), 4)},
     }
 
-
-def forecast_by_channel(
-    df: pd.DataFrame,
-    metric: str = "revenue",
-    periods: int = 12,
-) -> Dict[str, Dict]:
-    """Run forecasts per channel."""
-    results = {}
-    for ch in df["channel"].unique():
-        ch_df = df[df["channel"] == ch]
-        if len(ch_df.groupby("month" if "month" in ch_df.columns else "date")) < 6:
-            continue
-        results[ch] = forecast_prophet(ch_df, metric, periods)
-    return results
-
-
-def run_full_forecast(
-    df: pd.DataFrame,
-    periods: int = 12,
-) -> Dict:
-    """Run forecasts for revenue, spend, and conversions at total and channel level."""
+def forecast_linear_fallback(df, metric="revenue", periods=12):
+    """Simple linear trend + seasonal ratio. Fallback when Prophet/ARIMA unavailable."""
+    time_col = "month" if "month" in df.columns else "date"
+    monthly = df.groupby(time_col)[metric].sum().reset_index().sort_values(time_col)
+    y = monthly[metric].values.astype(float); n = len(y)
+    x = np.arange(n); mx, my = x.mean(), y.mean()
+    num = ((x-mx)*(y-my)).sum(); den = ((x-mx)**2).sum()
+    slope = num/den if den>0 else 0; intercept = my - slope*mx
+    seasonal = y / np.maximum(slope*x + intercept, 1)
+    fc = [max(0, (slope*(n+i)+intercept)*seasonal[i%n]) for i in range(periods)]
+    y_pred = slope*x + intercept
     return {
-        "revenue_forecast": forecast_prophet(df, "revenue", periods),
-        "spend_forecast": forecast_prophet(df, "spend", periods),
-        "channel_forecasts": forecast_by_channel(df, "revenue", periods),
+        "method": "linear_seasonal_fallback", "metric": metric,
+        "historical": {"actual": y.tolist()},
+        "forecast": {"predicted": [round(f) for f in fc]},
+        "summary": {"historical_total": round(float(y.sum()),0),
+                     "forecast_total": round(sum(fc),0),
+                     "yoy_pct": round((sum(fc)-y.sum())/max(y.sum(),1)*100,1)},
+        "diagnostics": {"r_squared": round(float(r2_score(y, y_pred)), 4),
+                         "warning": "Linear fallback — install prophet or statsmodels for proper forecasting"},
     }
 
-
-if __name__ == "__main__":
-    from mock_data import generate_all_data
-    
-    data = generate_all_data()
-    df = data["campaign_performance"]
-    
-    print("=== Revenue Forecast ===")
-    rev = forecast_prophet(df, "revenue", 12)
-    print(f"Method: {rev['method']}")
-    print(f"Historical: ${rev['summary']['historical_total']:,.0f}")
-    print(f"Forecast: ${rev['summary']['forecast_total']:,.0f} "
-          f"[${rev['summary']['forecast_lower']:,.0f} - ${rev['summary']['forecast_upper']:,.0f}]")
-    print(f"YoY Change: {rev['summary']['yoy_change_pct']:+.1f}%")
-    
-    print("\n=== Channel Forecasts ===")
-    ch_fc = forecast_by_channel(df, "revenue", 12)
-    for ch, fc in ch_fc.items():
-        print(f"  {ch}: ${fc['summary']['forecast_total']:,.0f} ({fc['summary']['yoy_change_pct']:+.1f}%)")
+def run_forecast(df, metric="revenue", periods=12, method="auto"):
+    """Public API. Auto tries prophet → arima → linear."""
+    if method == "auto":
+        for fn, name in [(forecast_prophet, "prophet"), (forecast_arima, "arima")]:
+            try:
+                result = fn(df, metric, periods)
+                logger.info(f"Forecast via {name}")
+                return result
+            except ImportError:
+                logger.info(f"{name} not available, trying next...")
+            except Exception as e:
+                logger.warning(f"{name} failed: {e}")
+        return forecast_linear_fallback(df, metric, periods)
+    elif method == "prophet": return forecast_prophet(df, metric, periods)
+    elif method == "arima": return forecast_arima(df, metric, periods)
+    elif method == "linear": return forecast_linear_fallback(df, metric, periods)
+    else: raise ValueError(f"Unknown method: {method}")

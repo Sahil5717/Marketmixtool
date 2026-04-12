@@ -1,205 +1,203 @@
 # Input Data Format Specification
-## Yield Intelligence Platform
-### Version 1.0 | Phase 1
+## Yield Intelligence Platform — v2.0
 
 ---
 
-## Overview
+## Critical: Data Duration Requirements
 
-The platform requires **two CSV files** as input. Everything else is computed by the engines.
+This tool uses **two different time windows** from the same dataset:
 
-| File | Required? | Purpose | Expected Rows |
+| Purpose | Time Window | Why |
+|---------|-------------|-----|
+| **ROI, KPIs, diagnostics, recommendations** | Last 12 months (current FY) | Shows current performance, not historical averages |
+| **MMM, response curves, adstock, forecasting** | Full 3–5 years | Statistical models need enough observations for reliable parameter estimation |
+
+**You upload ONE file.** The system automatically splits it:
+- Last 12 months → performance reporting
+- Full history → model training
+
+### What happens with insufficient data
+
+| Data uploaded | ROI/KPIs | Response Curves | MMM (Bayesian) | Forecasting | Optimizer |
+|---------------|----------|-----------------|----------------|-------------|-----------|
+| 12 months | ✅ Correct | ⚠️ Overfitting risk | ❌ Unreliable (12 points for MCMC) | ❌ Can't detect seasonality | ⚠️ Based on weak curves |
+| 24 months | ✅ Correct | ✅ Acceptable | ⚠️ Minimum viable | ✅ 2 seasonal cycles | ✅ Acceptable |
+| 36 months | ✅ Correct | ✅ Good | ✅ Reliable | ✅ Good | ✅ Reliable |
+| 48–60 months | ✅ Correct | ✅ Strong | ✅ Strong (convergent posteriors) | ✅ Strong | ✅ Strong |
+
+**Recommendation: Upload 36+ months of data.** 48 months is ideal.
+
+---
+
+## Input Files
+
+| File | Required? | Purpose | Rows expected |
 |------|-----------|---------|---------------|
-| Campaign Performance | **Yes** | All KPIs, ROI, trends, diagnostics, optimization | 5K-500K (daily × channels × campaigns × regions) |
-| User Journeys | **Yes for MTA** | Multi-touch attribution (linear, position-based) | 50K-5M (touchpoints across all user journeys) |
+| **Campaign Performance** | Yes | All KPIs, ROI, models, optimization | 5K–500K (monthly × channels × campaigns × regions × 3–5 years) |
+| **User Journeys** | Optional (for multi-touch attribution) | Markov chain, Shapley, position-based attribution | 50K–5M touchpoints |
+| **Offline Activity** | Optional (for offline channels) | TV/radio/OOH/events/dealer metrics not captured in digital platforms | 500–50K rows |
+| **Budget Plan** | Optional (for next-year scenarios) | Baseline plan to compare against optimizer output | 50–500 rows |
 
-If User Journeys file is not provided, only Last-Touch attribution is available.
-
----
-
-## File 1: Campaign Performance
-
-**Filename convention:** `campaign_performance_YYYY.csv` or `campaign_data.csv`
-**Encoding:** UTF-8
-**Delimiter:** Comma
-**Grain:** One row per Date × Channel × Campaign × Region (finest available)
-
-### Required Columns
-
-These 5 columns MUST be present. Analysis cannot proceed without them.
-
-| Column | Type | Format | Rules | Used By |
-|--------|------|--------|-------|---------|
-| `date` | Date | YYYY-MM-DD | Valid date; no nulls; range within last 3 years | All engines — time axis for trends, seasonality, MoM |
-| `channel` | String | Free text | Non-null; will be mapped to standard taxonomy | All engines — primary grouping dimension |
-| `campaign` | String | Free text | Non-null; max 200 chars | Deep dive, diagnostics, campaign-level marginal ROI |
-| `spend` | Numeric | Decimal, no currency symbols | ≥ 0; no nulls; in base currency units (e.g., USD) | ROI, ROAS, CAC, optimizer, leakage, avoidable cost |
-| `revenue` | Numeric | Decimal, no currency symbols | ≥ 0; no nulls; attributed revenue | ROI, ROAS, response curves, optimizer |
-
-### Recommended Columns
-
-These unlock additional analyses. Missing columns disable specific features, not the whole tool.
-
-| Column | Type | Format | Rules | Unlocks |
-|--------|------|--------|-------|---------|
-| `sub_channel` | String | Free text | e.g., "google", "meta", "bing" | Sub-channel drill-down within channels |
-| `campaign_objective` | String | Enum-like | awareness, lead_generation, conversion, retargeting, nurture, brand_awareness, organic | Campaign objective analysis |
-| `funnel_stage` | String | Enum | top, middle, bottom | Funnel stage mapping for spend allocation analysis |
-| `region` | String | Free text | Will be mapped to taxonomy | Regional breakdown, regional leakage analysis |
-| `product` | String | Free text | Product/BU name | Product attribution, product-level ROI |
-| `audience_segment` | String | Free text | Target audience description | Audience-level performance analysis |
-| `impressions` | Integer | Whole number | ≥ 0; set 0 for offline channels | CTR calculation, funnel top |
-| `clicks` | Integer | Whole number | ≥ 0; ≤ impressions; set 0 for offline | CPC, CTR, CVR, funnel |
-| `leads` | Integer | Whole number | ≥ 0 | CPL, lead-to-sale rate, funnel |
-| `mqls` | Integer | Whole number | ≥ 0; ≤ leads | Funnel analysis, bottleneck detection |
-| `sqls` | Integer | Whole number | ≥ 0; ≤ mqls | Funnel analysis, handoff analysis |
-| `conversions` | Integer | Whole number | ≥ 0; ≤ sqls | CAC, CVR, payback period |
-| `bounce_rate` | Decimal | 0.00 to 1.00 | 0 ≤ x ≤ 1; set 0 if unavailable | CX signals, conversion suppression |
-| `avg_session_duration_sec` | Numeric | Seconds | ≥ 0; set 0 for offline | CX signals, experience analysis |
-| `form_completion_rate` | Decimal | 0.00 to 1.00 | 0 ≤ x ≤ 1 | CX signals, conversion suppression |
-| `pages_per_session` | Numeric | Decimal | ≥ 0 | Engagement depth |
-| `nps_score` | Integer | -100 to 100 | Net Promoter Score | Retention risk signals |
-| `unsubscribe_rate` | Decimal | 0.00 to 0.10 | Email channel only; set 0 for others | Retention risk |
-| `confidence_tier` | String | Enum | High, Medium, Model-Estimated | Confidence badges on all metrics |
-
-### Rules for Offline Channels
-
-Offline channels (TV, radio, OOH, events, direct mail, partner) typically have:
-- `impressions` = 0 (not directly tracked)
-- `clicks` = 0
-- `leads` may be available (event registrations, call-ins)
-- `revenue` may be estimated via CRM matching or time-lag correlation
-- `confidence_tier` = "Model-Estimated"
-- `bounce_rate`, `session_duration`, `form_completion` = 0
-
-**Do NOT leave these fields null** — use 0 for unavailable metrics. Nulls cause calculation errors.
-
-### Example: What Different Channel Rows Look Like
-
-**Paid Search (fully tracked):**
-```
-2025-01-15,paid_search,google,PS_Brand_Exact,brand,bottom,North,Product_A,existing,1250,15000,675,47,21,8,3,1140,0.35,155,0.14,3.2,38,0,High
-```
-
-**TV National (model-estimated):**
-```
-2025-01-15,tv_national,,TV_Brand_Q1,awareness,top,National,Product_A,,12000,0,0,0,0,0,0,0,0,0,0,0,0,0,Model-Estimated
-```
-Note: TV revenue attribution happens via MMM (Phase 2). In Phase 1, set revenue=0 and the tool will flag it as model-estimated.
-
-**Events (partially tracked):**
-```
-2025-01-15,events,,CES_2025_Booth,lead_generation,middle,West,Product_B,,4500,0,0,85,38,14,5,5500,0.12,320,0.48,0,68,0,Model-Estimated
-```
+If only Campaign Performance is provided, the tool uses last-touch attribution and treats offline channels based on spend-revenue correlation.
 
 ---
 
-## File 2: User Journeys
+## File 1: Campaign Performance (Required)
 
-**Filename convention:** `user_journeys_YYYY.csv` or `journey_data.csv`
-**Encoding:** UTF-8
-**Grain:** One row per Journey × Touchpoint
+**Grain:** One row per Month × Channel × Campaign × Region
+**Date range:** 3–5 years (minimum 24 months, ideal 48 months)
+**Encoding:** UTF-8 CSV or XLSX
+
+### Required Columns (5)
+
+| Column | Type | Format | Example | Used By |
+|--------|------|--------|---------|---------|
+| `date` | Date | YYYY-MM-DD or YYYY-MM | 2022-01-01 | All engines — time axis. **Must span 3+ years for models** |
+| `channel` | String | Free text | paid_search, tv_national, events | All engines — primary dimension |
+| `campaign` | String | Free text | PS_Brand_Q1, TV_Launch_2023 | Deep dive, campaign-level diagnostics |
+| `spend` | Numeric | No currency symbols | 15000.00 | ROI, ROAS, CAC, optimizer, leakage |
+| `revenue` | Numeric | No currency symbols | 48000.00 | ROI, ROAS, response curves, optimizer |
+
+### Recommended Columns (unlock more features)
+
+| Column | Type | Example | Unlocks |
+|--------|------|---------|---------|
+| `channel_type` | String: online / offline | online | Online vs offline split, cross-channel analysis |
+| `region` | String | North, South, West | Regional leakage, geo-lift testing |
+| `product` | String | Product_A | Product-level ROI |
+| `impressions` | Integer | 85000 | CTR, funnel top. **Set 0 for offline channels** |
+| `clicks` | Integer | 3800 | CPC, CTR, CVR. **Set 0 for offline** |
+| `leads` | Integer | 266 | CPL, funnel analysis |
+| `mqls` | Integer | 120 | Funnel bottleneck detection |
+| `sqls` | Integer | 46 | Lead quality analysis |
+| `conversions` | Integer | 14 | CAC, CVR, payback period |
+| `bounce_rate` | Decimal 0–1 | 0.42 | CX suppression analysis |
+| `avg_session_duration_sec` | Numeric | 145 | Engagement quality |
+| `form_completion_rate` | Decimal 0–1 | 0.12 | Conversion friction detection |
+| `nps_score` | Integer 0–100 | 38 | Experience pillar |
+
+### Offline-Specific Columns (optional, for offline channels)
+
+| Column | Type | Example | Unlocks |
+|--------|------|---------|---------|
+| `grps` | Numeric | 250.5 | TV/radio reach measurement |
+| `reach` | Integer | 1500000 | Offline audience reach |
+| `store_visits` | Integer | 3400 | Offline-to-store conversion |
+| `calls_generated` | Integer | 890 | Call center attribution |
+| `event_attendees` | Integer | 450 | Event ROI calculation |
+| `dealer_enquiries` | Integer | 120 | Dealer/partner attribution |
+| `coupon_redemptions` | Integer | 2300 | Promo effectiveness |
+
+**Rules for offline channels:**
+- Set `impressions`, `clicks`, `bounce_rate`, `form_completion_rate` to 0
+- Use `reach` or `grps` instead of `impressions` for awareness measurement
+- `conversions` can be offline sales attributed to the campaign
+
+---
+
+## File 2: User Journeys (Optional)
+
+**Grain:** One row per touchpoint in a user journey
+**Purpose:** Enables multi-touch attribution (Markov, Shapley, position-based)
+**If not provided:** Only last-touch attribution is available
 
 ### Required Columns
 
-| Column | Type | Format | Rules | Used By |
-|--------|------|--------|-------|---------|
-| `journey_id` | String | Unique ID | Consistent within a journey; e.g., "J00001" or user hash | All 3 attribution models |
-| `touchpoint_order` | Integer | 1, 2, 3... | Sequential within journey; starts at 1 | Position-based attribution weights |
-| `total_touchpoints` | Integer | ≥ 1 | Same value for all rows in a journey | Attribution weight calculation |
-| `touchpoint_date` | Date | YYYY-MM-DD | Valid date | Time-based analysis |
-| `channel` | String | Must match campaign file | Same channel names as File 1 | Attribution credit by channel |
-| `campaign` | String | Must match campaign file | Same campaign names as File 1 | Campaign-level attribution |
-| `converted` | Boolean | TRUE/FALSE | TRUE if journey resulted in conversion | Filters converting journeys |
-| `conversion_revenue` | Numeric | Decimal | > 0 only on last touchpoint of converted journeys; 0 elsewhere | Revenue to distribute across touchpoints |
+| Column | Type | Example | Purpose |
+|--------|------|---------|---------|
+| `journey_id` | String | J_00001 | Groups touchpoints into journeys |
+| `touchpoint_order` | Integer | 1, 2, 3... | Sequence within the journey |
+| `channel` | String | paid_search | Must match campaign performance channels |
+| `campaign` | String | PS_Brand | Must match campaign performance campaigns |
+| `converted` | Boolean | TRUE / FALSE | Whether this journey converted |
+| `conversion_revenue` | Numeric | 850.00 | Revenue from conversion (0 if not converted) |
+| `total_touchpoints` | Integer | 4 | Total touchpoints in this journey |
 
-### Optional Columns
+---
 
-| Column | Type | Format | Unlocks |
-|--------|------|--------|---------|
-| `sub_channel` | String | Free text | Sub-channel attribution |
-| `interaction_type` | String | ad_view, ad_click, organic_visit, email_click, phone_call, etc. | Interaction-type analysis |
-| `device` | String | desktop, mobile, tablet, phone, tv, outdoor | Cross-device journey analysis |
-| `conversion_date` | Date | YYYY-MM-DD | Time-to-conversion analysis |
-| `conversion_product` | String | Product name | Product-level attribution |
+## File 3: Offline Activity Detail (Optional)
 
-### Journey Data Rules
+For offline channels where the campaign performance file doesn't capture enough detail.
 
-1. **Every journey must have consecutive touchpoint_order** starting from 1
-2. **total_touchpoints must be consistent** across all rows of the same journey_id
-3. **conversion_revenue should only appear on the LAST touchpoint** of a converted journey
-4. **Non-converted journeys** should have converted=FALSE and conversion_revenue=0 for all touchpoints
-5. **Include non-converted journeys** — they provide volume context and path analysis
-6. **Minimum data:** 1,000+ converted journeys recommended for reliable attribution
-7. **Channel/campaign names must match** the Campaign Performance file for proper joining
+### Columns
 
-### How Attribution Uses This Data
+| Column | Type | Example | Purpose |
+|--------|------|---------|---------|
+| `date` | Date | 2024-03-01 | Activity date |
+| `channel` | String | events | Must match campaign performance |
+| `campaign` | String | TradeShow_CES_2024 | Activity name |
+| `region` | String | West | Region |
+| `activity_type` | String | trade_show / webinar / dealer_activation | Type |
+| `attendees` | Integer | 450 | Participants |
+| `qualified_leads` | Integer | 68 | Qualified outcomes |
+| `pipeline_generated` | Numeric | 340000 | Pipeline $ value |
+| `cost` | Numeric | 85000 | Total activity cost |
+| `follow_up_meetings` | Integer | 23 | Sales follow-up |
+
+---
+
+## File 4: Budget Plan (Optional)
+
+For next-year scenario comparison.
+
+| Column | Type | Example | Purpose |
+|--------|------|---------|---------|
+| `scenario` | String | baseline / growth / efficiency | Scenario name |
+| `channel` | String | paid_search | Channel |
+| `campaign` | String | PS_Brand | Campaign (optional) |
+| `planned_spend` | Numeric | 180000 | Planned annual spend |
+| `min_spend` | Numeric | 50000 | Minimum constraint |
+| `max_spend` | Numeric | 300000 | Maximum constraint |
+
+---
+
+## How the Data Flows Through the System
 
 ```
-Last-Touch:     100% credit → last touchpoint before conversion
-Linear:         Equal credit → each touchpoint gets revenue / total_touchpoints
-Position-Based: 40% first + 40% last + 20% split among middle touchpoints
+Upload (3-5 years)
+    │
+    ├── Data Splitter
+    │   ├── Last 12 months ──→ ROI / KPIs / Diagnostics / Recommendations / Pillars
+    │   └── Full history ───→ Response Curves / MMM / Adstock / Forecasting
+    │
+    ├── User Journeys ────→ Multi-touch Attribution (Markov, Shapley)
+    │
+    └── Budget Plan ──────→ Scenario Comparison / Constraint Setup
+         │
+         └── Optimizer uses model params (from full history)
+             applied to current-year budget
 ```
 
 ---
 
 ## Data Quality Requirements
 
-### Minimum for Analysis
-
-| Requirement | Minimum | Recommended |
-|-------------|---------|-------------|
-| Date range | 3 months | 12+ months |
-| Rows (campaign file) | 500 | 5,000+ |
-| Channels | 3 | 8+ |
-| Campaigns | 10 | 30+ |
-| Converted journeys | 500 | 3,000+ |
-
-### Quality Gate Thresholds
-
-| Check | Threshold | Result if Failed |
-|-------|-----------|-----------------|
-| Required columns present | All 5 present | ❌ Block all analysis |
-| Data completeness | > 85% cells non-null | ⚠️ Warning banner |
-| Date coverage | > 3 months | ⚠️ Response curves less reliable |
-| Negative values in spend/revenue | 0 allowed | ❌ Block until fixed |
-| Duplicate rows on key | 0 duplicates | ⚠️ Warning, deduplicate |
-| Channel mapping | > 80% mapped | ⚠️ Block optimizer until mapped |
+| Check | Rule | Consequence if violated |
+|-------|------|------------------------|
+| Date completeness | No month gaps in the date range | Models may produce spurious seasonality |
+| Spend positivity | All spend values ≥ 0 | Negative spend breaks response curves |
+| Revenue positivity | All revenue values ≥ 0 | Negative revenue breaks ROI calculations |
+| Channel consistency | Same channel names across all years | Mismatched names → channels treated as separate |
+| No future dates | All dates ≤ today | Future dates confuse train/report split |
+| Minimum 24 months | Date range spans 24+ months | Models flagged as unreliable if less |
 
 ---
 
-## What Happens If Columns Are Missing
+## Naming Conventions
 
-| Missing Column(s) | Impact |
-|-------------------|--------|
-| impressions, clicks | No CTR, CPC; funnel starts at leads |
-| leads, mqls, sqls | No funnel analysis; no bottleneck detection |
-| conversions | No CAC, CVR, payback period; ROI uses revenue only |
-| region | No regional breakdown or leakage heatmap |
-| product | No product-level attribution |
-| bounce_rate, session_duration, form_completion | No CX signals; no conversion suppression analysis |
-| nps_score | No retention risk signals |
-| confidence_tier | All metrics shown without confidence badges |
-| User Journey file entirely | Only last-touch attribution; no linear or position-based |
+Use consistent channel names across all years. The system auto-maps common variations:
 
----
-
-## Preparing Your Data
-
-### Step-by-Step
-
-1. **Export daily campaign data** from each platform (Google Ads, Meta, LinkedIn, etc.)
-2. **Combine into single CSV** with the schema above
-3. **Add offline channels** — events, direct mail, TV as separate rows with spend + any tracked leads/conversions
-4. **Set confidence_tier** — "High" for digital with tracking, "Medium" for partially tracked, "Model-Estimated" for offline
-5. **Export journey data** from your CDP, analytics platform, or CRM
-6. **Ensure channel/campaign names match** between both files
-7. **Upload both files** into the platform
-
-### Common Pitfalls
-
-- **Don't mix currencies** — convert everything to one base currency before upload
-- **Don't include header rows twice** — one header row at top only
-- **Don't use commas in numbers** — 1250.50 not 1,250.50
-- **Don't leave required fields blank** — use 0 for unavailable numeric fields
-- **Don't use different channel names** between the two files — "Paid Search" in one and "paid_search" in the other will break joining
+| Standard Name | Accepted Variations |
+|---------------|-------------------|
+| paid_search | Paid Search, Google Ads, SEM, PPC |
+| organic_search | Organic Search, SEO, Natural Search |
+| social_paid | Social Paid, Meta Ads, Facebook Ads, Social Media Paid |
+| display | Display, Programmatic, GDN, Display Advertising |
+| email | Email, Email Marketing, eDM |
+| video_youtube | Video, YouTube, OLV, Online Video |
+| events | Events, Trade Shows, Conferences, Webinars |
+| tv_national | TV, Television, TV National, Broadcast TV |
+| radio | Radio, Radio Advertising |
+| ooh | OOH, Out of Home, Billboard, Outdoor |
+| direct_mail | Direct Mail, DM, Mail, Postal |
+| call_center | Call Center, Telemarketing, Outbound Calls |

@@ -1,263 +1,191 @@
 """
-Bayesian Marketing Mix Model (Phase 2)
-Uses PyMC for MCMC inference to estimate channel-level contribution
-including offline channels and cross-channel effects.
+Bayesian Marketing Mix Model — Production Grade
+================================================
+Model: Revenue_t = baseline + Σ_c β_c · Hill(Adstock(Spend_c,t; λ_c); K_c) + season + ε_t
 
-Model: Revenue = baseline + Σ beta_i * saturation(adstock(spend_i)) + external_effects + noise
-
-Key outputs:
-- Channel contribution ($ and %)
-- Posterior distributions for uncertainty
-- Adstock decay rates per channel
-- Saturation curves per channel
-- ROAS with confidence intervals
+Libraries:
+    pymc (NUTS sampler), arviz (diagnostics), scipy (MLE fallback), scikit-learn (metrics)
 """
-
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Optional, Tuple
-import warnings
+from typing import Dict, Optional
+from sklearn.metrics import r2_score, mean_absolute_percentage_error
+import warnings, logging
 warnings.filterwarnings("ignore")
+logger = logging.getLogger(__name__)
 
-from engines.adstock import geometric_adstock, hill_saturation
+def geometric_adstock(x, decay):
+    out = np.zeros_like(x, dtype=np.float64)
+    out[0] = x[0]
+    for t in range(1, len(x)):
+        out[t] = x[t] + decay * out[t - 1]
+    return out
 
+def hill_saturation(x, half_sat, slope=1.0):
+    x_s = np.maximum(x, 1e-10)
+    return np.power(x_s, slope) / (np.power(half_sat, slope) + np.power(x_s, slope))
 
-def build_mmm_data(df: pd.DataFrame) -> Dict:
-    """
-    Prepare data for MMM: aggregate to weekly/monthly, 
-    create spend matrix, response vector, and control variables.
-    """
-    # Aggregate to monthly by channel
-    monthly = df.groupby(["month" if "month" in df.columns else "date"]).agg(
-        total_revenue=("revenue", "sum"),
-        total_spend=("spend", "sum"),
-    ).reset_index()
-    
-    # Channel spend matrix
-    channels = sorted(df["channel"].unique())
+def prepare_mmm_data(df):
     time_col = "month" if "month" in df.columns else "date"
-    
+    monthly = df.groupby(time_col).agg(revenue=("revenue","sum"), total_spend=("spend","sum")).reset_index().sort_values(time_col)
+    channels = sorted(df["channel"].unique())
     spend_matrix = {}
     for ch in channels:
-        ch_monthly = df[df["channel"] == ch].groupby(time_col)["spend"].sum()
-        spend_matrix[ch] = monthly[time_col].map(ch_monthly).fillna(0).values
-    
-    # Seasonality indicators
+        ch_agg = df[df["channel"]==ch].groupby(time_col)["spend"].sum()
+        spend_matrix[ch] = monthly[time_col].map(ch_agg).fillna(0).values.astype(np.float64)
     if "month" in df.columns:
         month_nums = monthly["month"].apply(lambda x: int(str(x).split("-")[1]) if "-" in str(x) else 1).values
     else:
-        month_nums = np.arange(1, len(monthly) + 1) % 12 + 1
-    
-    return {
-        "revenue": monthly["total_revenue"].values,
-        "total_spend": monthly["total_spend"].values,
-        "spend_matrix": spend_matrix,
-        "channels": channels,
-        "n_periods": len(monthly),
-        "month_nums": month_nums,
-        "periods": monthly[time_col].values,
-    }
+        month_nums = (np.arange(len(monthly)) % 12) + 1
+    return {"revenue": monthly["revenue"].values.astype(np.float64), "spend_matrix": spend_matrix,
+            "channels": channels, "n_periods": len(monthly), "month_nums": month_nums, "periods": monthly[time_col].values}
 
+def fit_bayesian_mmm(data, n_draws=1000, n_tune=500, n_chains=2):
+    """Full Bayesian MMM. Adstock decay is sampled jointly with betas via NUTS."""
+    import pymc as pm
+    import arviz as az
+    revenue = data["revenue"]; channels = data["channels"]; n_ch = len(channels); T = data["n_periods"]
+    spend_raw = np.column_stack([data["spend_matrix"][ch] for ch in channels])
+    spend_scales = spend_raw.max(axis=0) + 1e-10
+    spend_normed = spend_raw / spend_scales
+    sin_s = np.sin(2*np.pi*data["month_nums"]/12); cos_s = np.cos(2*np.pi*data["month_nums"]/12)
+    rev_mean, rev_std = revenue.mean(), revenue.std()+1e-10
 
-def fit_mmm_lightweight(
-    mmm_data: Dict,
-    adstock_decay: Optional[Dict[str, float]] = None,
-    n_iterations: int = 2000,
-) -> Dict:
-    """
-    Lightweight Bayesian MMM using PyMC.
-    Falls back to OLS if PyMC fails.
-    
-    Model:
-    revenue ~ baseline + Σ beta_i * hill(geometric_adstock(spend_i, decay_i)) + seasonality + noise
-    """
-    revenue = mmm_data["revenue"]
-    channels = mmm_data["channels"]
-    n = mmm_data["n_periods"]
-    
-    # Default adstock decays
-    if adstock_decay is None:
-        adstock_decay = {ch: 0.5 for ch in channels}
-    
-    # Transform spend: adstock + saturation
-    X = np.zeros((n, len(channels)))
-    for i, ch in enumerate(channels):
-        spend = mmm_data["spend_matrix"][ch]
-        decay = adstock_decay.get(ch, 0.5)
-        adstocked = geometric_adstock(spend, decay)
-        half_sat = float(np.median(adstocked[adstocked > 0])) if np.any(adstocked > 0) else 1.0
-        saturated = hill_saturation(adstocked, half_sat, slope=1.0)
-        X[:, i] = saturated
-    
-    # Add seasonality (sin/cos)
-    month_nums = mmm_data["month_nums"]
-    X_season = np.column_stack([
-        np.sin(2 * np.pi * month_nums / 12),
-        np.cos(2 * np.pi * month_nums / 12),
-    ])
-    
-    X_full = np.column_stack([np.ones(n), X, X_season])
-    
-    # Try PyMC Bayesian fit
-    try:
-        import pymc as pm
-        import arviz as az
-        
-        with pm.Model() as model:
-            # Priors
-            baseline = pm.Normal("baseline", mu=np.mean(revenue), sigma=np.std(revenue))
-            betas = pm.HalfNormal("betas", sigma=np.std(revenue), shape=len(channels))
-            season_coefs = pm.Normal("season", mu=0, sigma=np.std(revenue) * 0.1, shape=2)
-            sigma = pm.HalfNormal("sigma", sigma=np.std(revenue) * 0.5)
-            
-            # Expected revenue
-            mu = baseline
-            for i in range(len(channels)):
-                mu = mu + betas[i] * X[:, i]
-            mu = mu + season_coefs[0] * X_season[:, 0] + season_coefs[1] * X_season[:, 1]
-            
-            # Likelihood
-            pm.Normal("obs", mu=mu, sigma=sigma, observed=revenue)
-            
-            # Sample
-            trace = pm.sample(
-                draws=min(n_iterations, 1000),
-                tune=500,
-                cores=1,
-                chains=2,
-                return_inferencedata=True,
-                progressbar=False,
-                random_seed=42,
-            )
-        
-        # Extract posteriors
-        beta_means = trace.posterior["betas"].mean(dim=["chain", "draw"]).values
-        beta_stds = trace.posterior["betas"].std(dim=["chain", "draw"]).values
-        baseline_mean = float(trace.posterior["baseline"].mean())
-        
-        method = "bayesian_pymc"
-        
-    except Exception as e:
-        # Fallback to OLS
-        print(f"PyMC failed ({e}), falling back to OLS")
-        
-        from numpy.linalg import lstsq
-        coeffs, residuals, rank, sv = lstsq(X_full, revenue, rcond=None)
-        
-        baseline_mean = float(coeffs[0])
-        beta_means = np.abs(coeffs[1:1 + len(channels)])  # Force positive
-        beta_stds = beta_means * 0.15  # Approximate uncertainty
-        
-        method = "ols_fallback"
-    
-    # Calculate contributions
-    contributions = {}
-    total_contribution = 0
-    
-    for i, ch in enumerate(channels):
-        contrib = float(beta_means[i] * X[:, i].sum())
-        contrib = max(0, contrib)  # Ensure non-negative
-        contributions[ch] = {
-            "contribution": round(contrib, 0),
-            "beta_mean": round(float(beta_means[i]), 2),
-            "beta_std": round(float(beta_stds[i]), 2) if i < len(beta_stds) else 0,
-            "adstock_decay": adstock_decay.get(ch, 0.5),
-            "spend": round(float(mmm_data["spend_matrix"][ch].sum()), 0),
-        }
-        total_contribution += contrib
-    
-    # Add ROAS and contribution %
-    total_revenue = float(revenue.sum())
-    baseline_contribution = max(0, total_revenue - total_contribution)
-    
+    with pm.Model():
+        baseline = pm.Normal("baseline", mu=rev_mean, sigma=rev_std)
+        betas = pm.HalfNormal("betas", sigma=rev_std*0.5, shape=n_ch)
+        decays = pm.Beta("decays", alpha=3, beta=3, shape=n_ch)
+        half_sats = pm.LogNormal("half_sats", mu=-0.7, sigma=0.5, shape=n_ch)
+        gamma = pm.Normal("gamma", mu=0, sigma=rev_std*0.1, shape=2)
+        sigma = pm.HalfNormal("sigma", sigma=rev_std*0.3)
+        mu = baseline + gamma[0]*sin_s + gamma[1]*cos_s
+        for c in range(n_ch):
+            ad_list = [spend_normed[0, c]]
+            for t in range(1, T):
+                ad_list.append(spend_normed[t, c] + decays[c]*ad_list[-1])
+            ad_tensor = pm.math.stack(ad_list)
+            sat = ad_tensor / (half_sats[c] + ad_tensor)
+            mu = mu + betas[c] * sat * spend_scales[c]
+        pm.Normal("obs", mu=mu, sigma=sigma, observed=revenue)
+        trace = pm.sample(draws=n_draws, tune=n_tune, chains=n_chains, cores=1,
+                          target_accept=0.9, return_inferencedata=True, progressbar=False, random_seed=42)
+
+    summary = az.summary(trace, var_names=["betas","decays","baseline"])
+    rhat_max = float(summary["r_hat"].max()); ess_min = float(summary["ess_bulk"].min())
+    try: loo_score = float(az.loo(trace).loo)
+    except: loo_score = None
+    beta_means = trace.posterior["betas"].values.mean(axis=(0,1))
+    beta_stds = trace.posterior["betas"].values.std(axis=(0,1))
+    beta_hdi = az.hdi(trace, var_names=["betas"], hdi_prob=0.9)["betas"].values
+    decay_means = trace.posterior["decays"].values.mean(axis=(0,1))
+    decay_stds = trace.posterior["decays"].values.std(axis=(0,1))
+    baseline_mean = float(trace.posterior["baseline"].values.mean())
+
+    contributions = {}; total_media = 0
+    for c, ch in enumerate(channels):
+        spend = data["spend_matrix"][ch]; d = float(decay_means[c])
+        hs = float(trace.posterior["half_sats"].values.mean(axis=(0,1))[c])
+        ad = geometric_adstock(spend/spend_scales[c], d); sat = hill_saturation(ad, hs)
+        contrib = max(0, float(beta_means[c]) * sat.sum() * spend_scales[c]); total_media += contrib
+        contributions[ch] = {"contribution": round(contrib,0), "beta_mean": round(float(beta_means[c]),4),
+            "beta_std": round(float(beta_stds[c]),4), "beta_hdi_90": [round(float(beta_hdi[c,0]),4), round(float(beta_hdi[c,1]),4)],
+            "decay_mean": round(d,3), "decay_std": round(float(decay_stds[c]),3),
+            "spend": round(float(spend.sum()),0)}
+
+    total_rev = float(revenue.sum()); bl_contrib = max(0, total_rev - total_media)
+    y_pred = np.full(T, baseline_mean)
+    y_pred += float(trace.posterior["gamma"].values.mean(axis=(0,1))[0])*sin_s
+    y_pred += float(trace.posterior["gamma"].values.mean(axis=(0,1))[1])*cos_s
+    for c, ch in enumerate(channels):
+        ad = geometric_adstock(data["spend_matrix"][ch]/spend_scales[c], float(decay_means[c]))
+        hs = float(trace.posterior["half_sats"].values.mean(axis=(0,1))[c])
+        y_pred += float(beta_means[c]) * hill_saturation(ad, hs) * spend_scales[c]
     for ch in channels:
-        c = contributions[ch]
-        c["contribution_pct"] = round(c["contribution"] / total_revenue * 100, 1) if total_revenue > 0 else 0
-        c["mmm_roas"] = round(c["contribution"] / max(c["spend"], 1), 2)
-        c["roas_lower"] = round(c["mmm_roas"] * (1 - c["beta_std"] / max(c["beta_mean"], 0.01)), 2)
-        c["roas_upper"] = round(c["mmm_roas"] * (1 + c["beta_std"] / max(c["beta_mean"], 0.01)), 2)
-        c["confidence"] = "High" if c["beta_std"] / max(c["beta_mean"], 0.01) < 0.3 else "Medium"
-    
-    # Model fit
-    y_pred = X_full @ np.concatenate([[baseline_mean], beta_means, [0, 0]])
-    ss_res = np.sum((revenue - y_pred) ** 2)
-    ss_tot = np.sum((revenue - np.mean(revenue)) ** 2)
-    r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0
-    mape = np.mean(np.abs((revenue - y_pred) / np.maximum(revenue, 1))) * 100
-    
-    return {
-        "method": method,
-        "contributions": contributions,
-        "baseline_contribution": round(baseline_contribution, 0),
-        "baseline_pct": round(baseline_contribution / total_revenue * 100, 1) if total_revenue > 0 else 0,
-        "total_revenue": round(total_revenue, 0),
-        "r_squared": round(float(r_squared), 3),
-        "mape": round(float(mape), 1),
-        "n_periods": n,
-        "channels": channels,
-        "fitted_values": y_pred.tolist(),
-        "actual_values": revenue.tolist(),
-        "periods": [str(p) for p in mmm_data["periods"]],
-    }
+        cc = contributions[ch]; cc["contribution_pct"] = round(cc["contribution"]/max(total_rev,1)*100,1)
+        cc["mmm_roas"] = round(cc["contribution"]/max(cc["spend"],1),2)
+        ci_w = cc["beta_std"]/max(cc["beta_mean"],0.001)
+        cc["confidence"] = "High" if ci_w<0.25 else ("Medium" if ci_w<0.5 else "Low")
+    return {"method":"bayesian_pymc","contributions":contributions,
+        "baseline_contribution":round(bl_contrib,0),"baseline_pct":round(bl_contrib/max(total_rev,1)*100,1),
+        "total_revenue":round(total_rev,0),
+        "model_diagnostics":{"r_squared":round(float(r2_score(revenue,y_pred)),4),
+            "mape":round(float(mean_absolute_percentage_error(revenue,y_pred)*100),2),
+            "r_hat_max":round(rhat_max,4),"converged":rhat_max<1.05,"ess_min":round(ess_min,0),
+            "loo_cv":loo_score,"n_draws":n_draws,"n_chains":n_chains,"n_periods":T},
+        "fitted_values":y_pred.tolist(),"actual_values":revenue.tolist(),
+        "channels":channels,"periods":[str(p) for p in data["periods"]]}
 
+def fit_ols_mmm(data):
+    """OLS fallback with bootstrap uncertainty. Used when PyMC unavailable."""
+    from numpy.linalg import lstsq
+    revenue = data["revenue"]; channels = data["channels"]; T = data["n_periods"]
+    best_decays = {}
+    for ch in channels:
+        spend = data["spend_matrix"][ch]
+        if spend.sum()==0: best_decays[ch]=0.0; continue
+        best_c, best_d = -1, 0.5
+        for d in np.arange(0.05, 0.95, 0.05):
+            ad = geometric_adstock(spend, d)
+            if ad.std()>0:
+                corr = np.corrcoef(ad, revenue)[0,1]
+                if corr>best_c: best_c=corr; best_d=d
+        best_decays[ch] = round(best_d, 2)
+    X = np.zeros((T, len(channels)))
+    for c, ch in enumerate(channels):
+        ad = geometric_adstock(data["spend_matrix"][ch], best_decays[ch])
+        hs = float(np.median(ad[ad>0])) if np.any(ad>0) else 1.0
+        X[:,c] = hill_saturation(ad, hs)
+    sin_s = np.sin(2*np.pi*data["month_nums"]/12); cos_s = np.cos(2*np.pi*data["month_nums"]/12)
+    X_full = np.column_stack([np.ones(T), X, sin_s, cos_s])
+    coeffs,_,_,_ = lstsq(X_full, revenue, rcond=None)
+    baseline_mean = float(coeffs[0]); beta_means = np.abs(coeffs[1:1+len(channels)])
+    n_boot=100; beta_boot=np.zeros((n_boot,len(channels)))
+    for b in range(n_boot):
+        idx=np.random.choice(T,T,replace=True)
+        try: cb,_,_,_=lstsq(X_full[idx],revenue[idx],rcond=None); beta_boot[b]=np.abs(cb[1:1+len(channels)])
+        except: beta_boot[b]=beta_means
+    beta_stds = beta_boot.std(axis=0)
+    y_pred = X_full @ coeffs
+    contributions = {}; total_media=0
+    for c, ch in enumerate(channels):
+        contrib=max(0,float(beta_means[c]*X[:,c].sum())); total_media+=contrib
+        contributions[ch]={"contribution":round(contrib,0),"beta_mean":round(float(beta_means[c]),4),
+            "beta_std":round(float(beta_stds[c]),4),"decay_mean":best_decays[ch],
+            "spend":round(float(data["spend_matrix"][ch].sum()),0)}
+    total_rev=float(revenue.sum()); bl=max(0,total_rev-total_media)
+    for ch in channels:
+        cc=contributions[ch]; cc["contribution_pct"]=round(cc["contribution"]/max(total_rev,1)*100,1)
+        cc["mmm_roas"]=round(cc["contribution"]/max(cc["spend"],1),2)
+        ci_w=cc["beta_std"]/max(cc["beta_mean"],0.001)
+        cc["confidence"]="High" if ci_w<0.3 else ("Medium" if ci_w<0.6 else "Low")
+    return {"method":"ols_bootstrap","contributions":contributions,
+        "baseline_contribution":round(bl,0),"baseline_pct":round(bl/max(total_rev,1)*100,1),
+        "total_revenue":round(total_rev,0),
+        "model_diagnostics":{"r_squared":round(float(r2_score(revenue,y_pred)),4),
+            "mape":round(float(mean_absolute_percentage_error(revenue,y_pred)*100),2),
+            "n_bootstrap":n_boot,"n_periods":T,
+            "warning":"OLS fallback — no Bayesian uncertainty. CIs are bootstrap approximations."},
+        "fitted_values":y_pred.tolist(),"actual_values":revenue.tolist(),
+        "channels":channels,"periods":[str(p) for p in data["periods"]]}
 
-def run_mmm(
-    df: pd.DataFrame,
-    adstock_params: Optional[Dict] = None,
-) -> Dict:
-    """
-    Full MMM pipeline: prepare data → fit adstock → run Bayesian model.
-    """
-    # Prepare data
-    mmm_data = build_mmm_data(df)
-    
-    # Get adstock params (use fitted from adstock engine or defaults)
-    decay_map = {}
-    if adstock_params:
-        for ch, info in adstock_params.items():
-            decay_map[ch] = info.get("params", {}).get("decay", 0.5)
-    else:
-        decay_map = {ch: 0.5 for ch in mmm_data["channels"]}
-    
-    # Fit MMM
-    result = fit_mmm_lightweight(mmm_data, decay_map)
-    
-    # Sort contributions by value
-    sorted_contribs = sorted(
-        result["contributions"].items(),
-        key=lambda x: x[1]["contribution"],
-        reverse=True
-    )
-    
-    result["ranked_contributions"] = [
-        {"rank": i + 1, "channel": ch, **info}
-        for i, (ch, info) in enumerate(sorted_contribs)
-    ]
-    
-    return result
+def run_mmm(df, method="auto", n_draws=1000):
+    """Public API: run MMM with auto-fallback. bayesian → ols."""
+    data = prepare_mmm_data(df)
+    if data["n_periods"]<6: logger.warning(f"Only {data['n_periods']} periods — MMM needs 12+ for reliability")
+    if method=="auto":
+        try:
+            result = fit_bayesian_mmm(data, n_draws=n_draws)
+            logger.info(f"Bayesian MMM: R²={result['model_diagnostics']['r_squared']:.3f}")
+            return _finalize(result)
+        except Exception as e:
+            logger.warning(f"Bayesian failed ({e}), using OLS")
+        return _finalize(fit_ols_mmm(data))
+    elif method=="bayesian": return _finalize(fit_bayesian_mmm(data, n_draws=n_draws))
+    elif method=="ols": return _finalize(fit_ols_mmm(data))
+    else: raise ValueError(f"Unknown method: {method}")
 
-
-if __name__ == "__main__":
-    from mock_data import generate_all_data
-    from adstock import compute_channel_adstock
-    
-    data = generate_all_data()
-    df = data["campaign_performance"]
-    
-    # Fit adstock first
-    adstock = compute_channel_adstock(df, "geometric")
-    
-    # Run MMM
-    print("Running Bayesian MMM...")
-    result = run_mmm(df, adstock)
-    
-    print(f"\nMethod: {result['method']}")
-    print(f"R²: {result['r_squared']:.3f} | MAPE: {result['mape']:.1f}%")
-    print(f"Baseline: ${result['baseline_contribution']:,.0f} ({result['baseline_pct']:.1f}%)")
-    
-    print("\nChannel Contributions:")
-    for item in result["ranked_contributions"]:
-        print(f"  {item['rank']}. {item['channel']}: "
-              f"${item['contribution']:,.0f} ({item['contribution_pct']:.1f}%) "
-              f"ROAS: {item['mmm_roas']:.2f} [{item['roas_lower']:.2f}-{item['roas_upper']:.2f}] "
-              f"[{item['confidence']}]")
+def _finalize(r):
+    if "contributions" in r:
+        sc = sorted(r["contributions"].items(), key=lambda x:x[1]["contribution"], reverse=True)
+        r["ranked_contributions"] = [{"rank":i+1,"channel":ch,**info} for i,(ch,info) in enumerate(sc)]
+    return r

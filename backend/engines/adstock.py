@@ -1,211 +1,89 @@
 """
-Adstock & Carryover Models (Phase 2)
-Models the lagged effect of media spend — today's ad exposure affects
-conversions for days/weeks after the exposure.
+Adstock & Carryover Models — Production Grade
+===============================================
+Geometric decay: adstock[t] = x[t] + λ·adstock[t-1]
+Weibull decay: flexible shape for delayed peak effects (TV, events)
+Hill saturation: y = x^S / (K^S + x^S)
+Fitting: scipy.optimize.minimize for decay + half-saturation parameters.
 
-Two adstock functions:
-1. Geometric: simple exponential decay (1 parameter: decay rate)
-2. Weibull: flexible shape allowing delayed peak (2 parameters: shape, scale)
-
-Plus saturation transform (Hill function) applied after adstock.
+Libraries: scipy.optimize.minimize, numpy, pandas
 """
-
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
-from typing import Dict, List, Tuple, Optional
+from scipy.optimize import minimize, differential_evolution
+from typing import Dict, Optional
 
+def geometric_adstock(x, decay=0.5, max_lag=8):
+    out = np.zeros_like(x, dtype=float); out[0] = x[0]
+    for t in range(1, len(x)): out[t] = x[t] + decay * out[t-1]
+    return out
 
-def geometric_adstock(x: np.ndarray, decay: float = 0.5, max_lag: int = 8) -> np.ndarray:
-    """
-    Geometric adstock: each period carries over a fraction (decay) to next.
-    adstock[t] = x[t] + decay * adstock[t-1]
-    
-    Args:
-        x: spend or impression series (daily/weekly)
-        decay: carryover rate (0 = no carryover, 1 = full carryover)
-        max_lag: maximum number of periods to carry over
-    """
-    adstocked = np.zeros_like(x, dtype=float)
-    adstocked[0] = x[0]
-    
-    for t in range(1, len(x)):
-        adstocked[t] = x[t] + decay * adstocked[t - 1]
-    
-    return adstocked
+def weibull_adstock(x, shape=2.0, scale=1.0, max_lag=12):
+    lags = np.arange(max_lag) + 1e-10
+    kernel = (shape/scale) * (lags/scale)**(shape-1) * np.exp(-(lags/scale)**shape)
+    kernel = np.nan_to_num(kernel); ks = kernel.sum()
+    kernel = kernel/ks if ks > 0 else np.ones(max_lag)/max_lag
+    return np.convolve(x, kernel, mode='full')[:len(x)]
 
-
-def weibull_adstock(x: np.ndarray, shape: float = 2.0, scale: float = 1.0, max_lag: int = 12) -> np.ndarray:
-    """
-    Weibull adstock: allows delayed peak effect.
-    Useful for channels like TV where effect builds then decays.
-    
-    Args:
-        x: spend series
-        shape: Weibull shape (>1 = delayed peak, =1 = exponential, <1 = fast decay)
-        scale: Weibull scale (higher = longer effect)
-    """
-    # Build Weibull kernel
-    lags = np.arange(max_lag) + 1e-10  # Avoid divide by zero at lag=0
-    kernel = (shape / scale) * (lags / scale) ** (shape - 1) * np.exp(-(lags / scale) ** shape)
-    kernel = np.nan_to_num(kernel, nan=0.0, posinf=0.0, neginf=0.0)
-    kernel_sum = kernel.sum()
-    kernel = kernel / kernel_sum if kernel_sum > 0 else np.ones(max_lag) / max_lag
-    
-    # Convolve
-    adstocked = np.convolve(x, kernel, mode='full')[:len(x)]
-    
-    return adstocked
-
-
-def hill_saturation(x: np.ndarray, half_saturation: float, slope: float = 1.0) -> np.ndarray:
-    """
-    Hill function saturation transform.
-    y = x^slope / (half_saturation^slope + x^slope)
-    
-    Returns values in [0, 1] — multiply by max_effect to get actual contribution.
-    """
+def hill_saturation(x, half_saturation, slope=1.0):
     x_safe = np.maximum(x, 1e-10)
-    return x_safe ** slope / (half_saturation ** slope + x_safe ** slope)
+    return x_safe**slope / (half_saturation**slope + x_safe**slope)
 
+def fit_adstock_params(spend, revenue, adstock_type="geometric"):
+    """
+    Fit adstock decay (and optionally Hill saturation K) by maximizing
+    correlation between adstocked-saturated spend and revenue.
+    Uses scipy differential_evolution for global optimization.
+    """
+    if spend.sum() == 0 or len(spend) < 3:
+        return {"decay": 0.0, "half_saturation": 1.0, "correlation": 0.0, "carryover_pct": 0.0}
 
-def adstock_transform(
-    spend_series: np.ndarray,
-    adstock_type: str = "geometric",
-    decay: float = 0.5,
-    shape: float = 2.0,
-    scale: float = 1.0,
-    max_lag: int = 8,
-    apply_saturation: bool = True,
-    half_saturation: Optional[float] = None,
-    saturation_slope: float = 1.0,
-) -> np.ndarray:
-    """
-    Full adstock + saturation pipeline.
-    1. Apply adstock (geometric or weibull)
-    2. Apply Hill saturation (optional)
-    """
-    # Step 1: Adstock
-    if adstock_type == "geometric":
-        adstocked = geometric_adstock(spend_series, decay, max_lag)
-    elif adstock_type == "weibull":
-        adstocked = weibull_adstock(spend_series, shape, scale, max_lag)
-    else:
-        adstocked = spend_series.copy()
-    
-    # Step 2: Saturation
-    if apply_saturation and half_saturation:
-        saturated = hill_saturation(adstocked, half_saturation, saturation_slope)
-    else:
-        saturated = adstocked
-    
-    return saturated
-
-
-def fit_adstock_params(
-    spend: np.ndarray,
-    response: np.ndarray,
-    adstock_type: str = "geometric",
-) -> Dict:
-    """
-    Fit optimal adstock parameters by maximizing correlation
-    between adstocked spend and response.
-    """
-    best_params = None
-    best_corr = -1
-    
-    if adstock_type == "geometric":
-        for decay in np.arange(0.1, 0.95, 0.05):
-            adstocked = geometric_adstock(spend, decay)
-            corr = np.corrcoef(adstocked, response)[0, 1]
-            if corr > best_corr:
-                best_corr = corr
-                best_params = {"decay": round(float(decay), 2)}
-    
-    elif adstock_type == "weibull":
-        for shape in np.arange(0.5, 4.0, 0.5):
-            for scale in np.arange(0.5, 5.0, 0.5):
-                adstocked = weibull_adstock(spend, shape, scale)
-                corr = np.corrcoef(adstocked, response)[0, 1]
-                if corr > best_corr:
-                    best_corr = corr
-                    best_params = {"shape": round(float(shape), 1), "scale": round(float(scale), 1)}
-    
-    return {
-        "adstock_type": adstock_type,
-        "params": best_params or {},
-        "correlation": round(float(best_corr), 4),
-    }
-
-
-def compute_channel_adstock(
-    df: pd.DataFrame,
-    adstock_type: str = "geometric",
-) -> Dict[str, Dict]:
-    """
-    Fit adstock parameters for each channel and return
-    adstocked spend series + optimal parameters.
-    """
-    results = {}
-    
-    for channel in df["channel"].unique():
-        ch_data = df[df["channel"] == channel].sort_values("month" if "month" in df.columns else "date")
-        
-        monthly = ch_data.groupby(ch_data.columns[ch_data.columns.str.contains("month|date")][0]).agg(
-            spend=("spend", "sum"),
-            revenue=("revenue", "sum"),
-        ).reset_index()
-        
-        if len(monthly) < 4:
-            continue
-        
-        spend = monthly["spend"].values
-        revenue = monthly["revenue"].values
-        
-        # Fit adstock
-        fit = fit_adstock_params(spend, revenue, adstock_type)
-        
-        # Apply with fitted params
+    def neg_corr(params):
         if adstock_type == "geometric":
-            adstocked = geometric_adstock(spend, fit["params"].get("decay", 0.5))
+            decay = params[0]; half_sat = params[1]
+            ad = geometric_adstock(spend, decay)
         else:
-            adstocked = weibull_adstock(
-                spend,
-                fit["params"].get("shape", 2.0),
-                fit["params"].get("scale", 1.0)
-            )
-        
-        # Fit half-saturation for Hill curve
-        median_adstocked = float(np.median(adstocked))
-        
-        results[channel] = {
-            **fit,
-            "original_spend": spend.tolist(),
-            "adstocked_spend": adstocked.tolist(),
-            "revenue": revenue.tolist(),
-            "half_saturation": round(median_adstocked, 0),
-            "carryover_effect_pct": round(float((adstocked.sum() - spend.sum()) / spend.sum() * 100), 1),
-        }
-    
+            shape, scale, half_sat = params[0], params[1], params[2]
+            ad = weibull_adstock(spend, shape, scale)
+        sat = hill_saturation(ad, half_sat)
+        if sat.std() == 0: return 0
+        return -np.corrcoef(sat, revenue)[0, 1]
+
+    if adstock_type == "geometric":
+        bounds = [(0.01, 0.95), (1, float(np.median(spend[spend > 0])*5 + 1))]
+    else:
+        bounds = [(0.5, 5.0), (0.5, 5.0), (1, float(np.median(spend[spend > 0])*5 + 1))]
+
+    try:
+        result = differential_evolution(neg_corr, bounds, seed=42, maxiter=200, tol=1e-6)
+        best_corr = -result.fun
+        if adstock_type == "geometric":
+            decay, half_sat = result.x
+            ad = geometric_adstock(spend, decay)
+            carryover = (ad.sum() - spend.sum()) / max(spend.sum(), 1) * 100
+            return {"decay": round(decay, 3), "half_saturation": round(half_sat, 2),
+                    "correlation": round(best_corr, 4), "carryover_pct": round(carryover, 1),
+                    "effective_lag": round(1/(1-decay), 1) if decay < 1 else 99}
+        else:
+            shape, scale, half_sat = result.x
+            return {"shape": round(shape, 3), "scale": round(scale, 3),
+                    "half_saturation": round(half_sat, 2), "correlation": round(best_corr, 4)}
+    except Exception as e:
+        return {"decay": 0.5, "half_saturation": 1.0, "correlation": 0.0, "error": str(e)}
+
+def compute_channel_adstock(df, adstock_type="geometric"):
+    """Fit adstock params for each channel. Returns dict of fitted params + transformed series."""
+    results = {}
+    time_col = "month" if "month" in df.columns else "date"
+    for ch in df["channel"].unique():
+        ch_data = df[df["channel"] == ch]
+        monthly = ch_data.groupby(time_col).agg(spend=("spend","sum"), revenue=("revenue","sum")).reset_index().sort_values(time_col)
+        spend = monthly["spend"].values.astype(float); rev = monthly["revenue"].values.astype(float)
+        params = fit_adstock_params(spend, rev, adstock_type)
+        if adstock_type == "geometric":
+            ad = geometric_adstock(spend, params.get("decay", 0.5))
+        else:
+            ad = weibull_adstock(spend, params.get("shape", 2.0), params.get("scale", 1.0))
+        results[ch] = {"params": params, "original_spend": spend.tolist(),
+            "adstocked_spend": ad.tolist(), "revenue": rev.tolist(), "periods": monthly[time_col].tolist()}
     return results
-
-
-if __name__ == "__main__":
-    from mock_data import generate_all_data
-    
-    data = generate_all_data()
-    df = data["campaign_performance"]
-    
-    print("=== Geometric Adstock ===")
-    results = compute_channel_adstock(df, "geometric")
-    for ch, info in results.items():
-        print(f"  {ch}: decay={info['params'].get('decay', '?')} "
-              f"corr={info['correlation']:.3f} "
-              f"carryover={info['carryover_effect_pct']:+.1f}%")
-    
-    print("\n=== Weibull Adstock ===")
-    results_w = compute_channel_adstock(df, "weibull")
-    for ch, info in results_w.items():
-        print(f"  {ch}: shape={info['params'].get('shape', '?')} "
-              f"scale={info['params'].get('scale', '?')} "
-              f"corr={info['correlation']:.3f}")

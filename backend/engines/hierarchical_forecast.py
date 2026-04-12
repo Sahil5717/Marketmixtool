@@ -1,90 +1,61 @@
-"""Hierarchical Forecasting (Phase 3) - Region × Channel × Campaign level prediction."""
+"""
+Hierarchical Forecasting — Production Grade
+=============================================
+Forecasts at region × channel × campaign level, then reconciles to total.
+Uses Prophet per series with top-down reconciliation.
+
+Libraries: prophet (per-series forecast), numpy, pandas
+"""
 import numpy as np
 import pandas as pd
 from typing import Dict
+import logging
+logger = logging.getLogger(__name__)
 
-def hierarchical_forecast(df, periods=12, levels=None):
-    """Forecast at multiple hierarchy levels with reconciliation."""
-    if levels is None:
-        levels = ["total", "channel", "region", "channel_region"]
+def run_hierarchical_forecast(df, metric="revenue", periods=12, group_cols=None):
+    """Forecast at granular level, reconcile to total."""
+    from engines.forecasting import run_forecast
     
+    if group_cols is None: group_cols = ["channel"]
     time_col = "month" if "month" in df.columns else "date"
-    ch_col = "channel" if "channel" in df.columns else "ch"
-    reg_col = "region" if "region" in df.columns else "reg"
     
-    results = {}
+    # Total forecast
+    total_fc = run_forecast(df, metric, periods)
+    total_pred = sum(total_fc.get("forecast",{}).get("predicted",[0]))
     
-    # Level 1: Total
-    if "total" in levels:
-        monthly = df.groupby(time_col)["revenue" if "revenue" in df.columns else "rev"].sum().values
-        results["total"] = _simple_forecast(monthly, periods, "Total")
+    # Per-group forecasts
+    group_forecasts = {}
+    group_totals = {}
+    for name, grp in df.groupby(group_cols):
+        key = name if isinstance(name, str) else "_".join(str(n) for n in name)
+        try:
+            fc = run_forecast(grp, metric, periods, method="auto")
+            pred_sum = sum(fc.get("forecast",{}).get("predicted",[0]))
+            group_forecasts[key] = fc
+            group_totals[key] = pred_sum
+        except Exception as e:
+            logger.warning(f"Forecast failed for {key}: {e}")
+            group_totals[key] = 0
     
-    # Level 2: By channel
-    if "channel" in levels:
-        results["by_channel"] = {}
-        for ch in df[ch_col].unique():
-            ch_data = df[df[ch_col] == ch].groupby(time_col)["revenue" if "revenue" in df.columns else "rev"].sum().values
-            if len(ch_data) >= 3:
-                results["by_channel"][ch] = _simple_forecast(ch_data, periods, ch)
+    # Top-down reconciliation: scale group forecasts to match total
+    raw_total = sum(group_totals.values()) or 1
+    scale_factor = total_pred / raw_total if raw_total > 0 else 1
     
-    # Level 3: By region
-    if "region" in levels:
-        results["by_region"] = {}
-        for reg in df[reg_col].unique():
-            reg_data = df[df[reg_col] == reg].groupby(time_col)["revenue" if "revenue" in df.columns else "rev"].sum().values
-            if len(reg_data) >= 3:
-                results["by_region"][reg] = _simple_forecast(reg_data, periods, reg)
-    
-    # Level 4: Channel × Region
-    if "channel_region" in levels:
-        results["by_channel_region"] = {}
-        for ch in df[ch_col].unique():
-            for reg in df[reg_col].unique():
-                cr_data = df[(df[ch_col]==ch)&(df[reg_col]==reg)].groupby(time_col)["revenue" if "revenue" in df.columns else "rev"].sum().values
-                if len(cr_data) >= 3:
-                    results["by_channel_region"][f"{ch}|{reg}"] = _simple_forecast(cr_data, periods, f"{ch}|{reg}")
-    
-    # Reconciliation: ensure channel forecasts sum to total
-    if "total" in results and "by_channel" in results:
-        total_fc = results["total"]["forecast_total"]
-        channel_sum = sum(r["forecast_total"] for r in results["by_channel"].values())
-        if channel_sum > 0:
-            scale = total_fc / channel_sum
-            for ch in results["by_channel"]:
-                results["by_channel"][ch]["forecast_total"] = round(results["by_channel"][ch]["forecast_total"] * scale, 0)
-                results["by_channel"][ch]["reconciliation_factor"] = round(scale, 3)
-    
-    return results
-
-def _simple_forecast(values, periods, label):
-    """Trend + seasonality forecast for a single series."""
-    n = len(values)
-    x = np.arange(n)
-    # Linear trend
-    if n >= 2:
-        slope, intercept = np.polyfit(x, values, 1)
-    else:
-        slope, intercept = 0, values[0] if len(values) > 0 else 0
-    
-    # Seasonal factors
-    fitted = slope * x + intercept
-    seasonal = values / np.maximum(fitted, 1)
-    
-    # Forecast
-    forecast = []
-    for i in range(periods):
-        trend_val = slope * (n + i) + intercept
-        sf = seasonal[i % n] if i < n else seasonal[i % min(n, 12)]
-        pred = max(0, trend_val * sf)
-        forecast.append(round(pred, 0))
+    reconciled = {}
+    for key, fc in group_forecasts.items():
+        preds = fc.get("forecast",{}).get("predicted",[])
+        reconciled[key] = {
+            "raw_forecast": preds,
+            "reconciled_forecast": [round(p * scale_factor) for p in preds],
+            "raw_total": round(group_totals.get(key,0),0),
+            "reconciled_total": round(group_totals.get(key,0) * scale_factor, 0),
+            "method": fc.get("method","unknown"),
+        }
     
     return {
-        "label": label,
-        "historical": values.tolist(),
-        "forecast": forecast,
-        "forecast_total": round(sum(forecast), 0),
-        "historical_total": round(float(values.sum()), 0),
-        "yoy_pct": round((sum(forecast) - values.sum()) / max(values.sum(), 1) * 100, 1),
-        "trend_slope": round(float(slope), 2),
+        "total_forecast": total_fc,
+        "group_forecasts": reconciled,
+        "reconciliation": {"method":"top_down","scale_factor":round(scale_factor,4),
+            "raw_group_sum":round(raw_total,0),"total_forecast":round(total_pred,0)},
+        "group_columns": group_cols,
     }
-

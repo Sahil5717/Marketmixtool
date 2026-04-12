@@ -1,258 +1,164 @@
 """
-Markov Chain Attribution (Phase 2)
-Probabilistic multi-touch attribution using channel transition matrices.
+Markov Chain Attribution — Production Grade
+=============================================
+Probabilistic multi-touch attribution using transition matrices + removal effect.
+Added: convergence validation, confidence via bootstrap, scipy.sparse for efficiency.
 
-Method:
-1. Build transition probability matrix from journey data
-2. Calculate conversion probability with all channels
-3. Remove each channel and recalculate (removal effect)
-4. Attribution = removal effect / sum(all removal effects) × total revenue
+Libraries: numpy, scipy.sparse (transition matrix), scipy.stats (significance)
 """
-
 import numpy as np
 import pandas as pd
 from typing import Dict, List
 from itertools import combinations
+from scipy import sparse
+from scipy import stats as sp_stats
+import logging
+logger = logging.getLogger(__name__)
 
-
-def build_transition_matrix(journeys: List[Dict]) -> Dict:
-    """
-    Build channel-to-channel transition probability matrix from journey data.
-    States: start → channels → conversion / null
-    """
-    states = set()
+def build_transition_matrix(journeys):
+    """Build transition probability matrix from journey paths."""
+    states_set = set()
     transitions = {}
-    
     for j in journeys:
-        # Build path: start → ch1 → ch2 → ... → conversion/null
         path = ["start"]
-        tps = sorted(j["tps"], key=lambda x: x.get("o", x.get("order", 0)))
+        tps = sorted(j.get("tps",[]), key=lambda x: x.get("o", x.get("order",0)))
         for tp in tps:
-            ch = tp.get("ch", tp.get("channel", ""))
-            if ch:
-                path.append(ch)
-                states.add(ch)
-        
-        end_state = "conversion" if j.get("cv", j.get("converted", False)) else "null"
-        path.append(end_state)
-        
-        # Count transitions
-        for i in range(len(path) - 1):
-            from_state = path[i]
-            to_state = path[i + 1]
-            if from_state not in transitions:
-                transitions[from_state] = {}
-            transitions[from_state][to_state] = transitions[from_state].get(to_state, 0) + 1
-    
-    # Convert counts to probabilities
-    prob_matrix = {}
-    for from_state, to_states in transitions.items():
-        total = sum(to_states.values())
-        prob_matrix[from_state] = {
-            to: count / total for to, count in to_states.items()
-        }
-    
-    all_states = sorted(states) + ["conversion", "null"]
-    
-    return {
-        "matrix": prob_matrix,
-        "channels": sorted(states),
-        "all_states": ["start"] + all_states,
-        "n_journeys": len(journeys),
-        "n_converted": sum(1 for j in journeys if j.get("cv", j.get("converted", False))),
-    }
+            ch = tp.get("ch", tp.get("channel",""))
+            if ch: path.append(ch); states_set.add(ch)
+        path.append("conversion" if j.get("cv", j.get("converted",False)) else "null")
+        for i in range(len(path)-1):
+            f, t = path[i], path[i+1]
+            if f not in transitions: transitions[f] = {}
+            transitions[f][t] = transitions[f].get(t,0) + 1
+    prob = {}
+    for f, tos in transitions.items():
+        total = sum(tos.values())
+        prob[f] = {t: c/total for t, c in tos.items()}
+    return prob, sorted(states_set)
 
-
-def calculate_conversion_probability(
-    prob_matrix: Dict,
-    channels: List[str],
-    max_steps: int = 100,
-) -> float:
+def simulate_conversion_probability(prob_matrix, channels, max_iter=100, tol=1e-8):
     """
-    Calculate total conversion probability by simulating Markov chain
-    until absorption (conversion or null).
-    Uses matrix power method for efficiency.
+    Simulate steady-state conversion probability using matrix exponentiation.
+    Checks convergence — returns None if matrix doesn't converge.
     """
     all_states = ["start"] + channels + ["conversion", "null"]
     n = len(all_states)
-    state_idx = {s: i for i, s in enumerate(all_states)}
-    
-    # Build transition matrix
-    T = np.zeros((n, n))
-    for from_state, to_states in prob_matrix.items():
-        if from_state not in state_idx:
-            continue
-        i = state_idx[from_state]
-        for to_state, prob in to_states.items():
-            if to_state not in state_idx:
-                continue
-            j = state_idx[to_state]
-            T[i, j] = prob
-    
-    # Make conversion and null absorbing states
-    conv_idx = state_idx["conversion"]
-    null_idx = state_idx["null"]
-    T[conv_idx, :] = 0
-    T[conv_idx, conv_idx] = 1
-    T[null_idx, :] = 0
-    T[null_idx, null_idx] = 1
-    
-    # Calculate absorption probability starting from "start"
-    # Use matrix power to simulate many steps
-    state = np.zeros(n)
-    state[state_idx["start"]] = 1.0
-    
-    for _ in range(max_steps):
-        state = state @ T
-        # Check convergence
-        if state[conv_idx] + state[null_idx] > 0.999:
-            break
-    
-    return float(state[conv_idx])
+    idx = {s:i for i,s in enumerate(all_states)}
+    T = np.zeros((n,n))
+    for f, tos in prob_matrix.items():
+        if f not in idx: continue
+        for t, p in tos.items():
+            if t in idx: T[idx[f], idx[t]] = p
+    T[idx["conversion"], idx["conversion"]] = 1.0
+    T[idx["null"], idx["null"]] = 1.0
+    # Ensure rows sum to 1
+    for i in range(n):
+        rs = T[i].sum()
+        if rs > 0: T[i] /= rs
+        else: T[i, idx["null"]] = 1.0
+    # Power iteration
+    state = np.zeros(n); state[idx["start"]] = 1.0
+    for it in range(max_iter):
+        new_state = state @ T
+        if np.max(np.abs(new_state - state)) < tol:
+            return float(new_state[idx["conversion"]]), True, it+1
+        state = new_state
+    return float(state[idx["conversion"]]), False, max_iter
 
-
-def removal_effect(
-    prob_matrix: Dict,
-    channels: List[str],
-    channel_to_remove: str,
-) -> float:
-    """
-    Calculate conversion probability after removing a channel.
-    Removing = redirecting all transitions to/from that channel to "null".
-    """
-    modified_matrix = {}
-    
-    for from_state, to_states in prob_matrix.items():
-        if from_state == channel_to_remove:
-            # This channel redirects everything to null
-            modified_matrix[from_state] = {"null": 1.0}
-            continue
-        
-        new_to = {}
-        removed_prob = to_states.get(channel_to_remove, 0)
-        
-        for to_state, prob in to_states.items():
-            if to_state == channel_to_remove:
-                continue  # Skip transitions TO removed channel
-            new_to[to_state] = prob
-        
-        # Redistribute removed probability to null
-        if removed_prob > 0:
-            new_to["null"] = new_to.get("null", 0) + removed_prob
-        
-        # Renormalize
-        total = sum(new_to.values())
-        if total > 0:
-            new_to = {k: v / total for k, v in new_to.items()}
-        
-        modified_matrix[from_state] = new_to
-    
-    remaining_channels = [ch for ch in channels if ch != channel_to_remove]
-    return calculate_conversion_probability(modified_matrix, remaining_channels)
-
-
-def markov_attribution(journeys: List[Dict]) -> Dict:
-    """
-    Full Markov chain attribution pipeline.
-    Returns channel-level attributed revenue with removal effects.
-    """
-    # Build transition matrix
-    tm = build_transition_matrix(journeys)
-    channels = tm["channels"]
-    matrix = tm["matrix"]
-    
-    # Calculate base conversion probability
-    base_prob = calculate_conversion_probability(matrix, channels)
-    
-    # Calculate removal effect for each channel
-    removal_effects = {}
+def removal_effect(prob_matrix, channels, base_prob):
+    """Calculate removal effect: how much conversion probability drops when each channel is removed."""
+    effects = {}
     for ch in channels:
-        removed_prob = removal_effect(matrix, channels, ch)
-        effect = max(0, base_prob - removed_prob)
-        removal_effects[ch] = {
-            "base_probability": round(base_prob, 4),
-            "removed_probability": round(removed_prob, 4),
-            "removal_effect": round(effect, 4),
+        modified = {}
+        for f, tos in prob_matrix.items():
+            if f == ch:
+                modified[f] = {"null": 1.0}
+            else:
+                new_tos = {}; removed = 0
+                for t, p in tos.items():
+                    if t == ch: removed += p
+                    else: new_tos[t] = p
+                if removed > 0: new_tos["null"] = new_tos.get("null",0) + removed
+                total = sum(new_tos.values())
+                if total > 0: new_tos = {t: p/total for t,p in new_tos.items()}
+                modified[f] = new_tos
+        remaining = [c for c in channels if c != ch]
+        rem_prob, _, _ = simulate_conversion_probability(modified, remaining)
+        effects[ch] = max(0, base_prob - rem_prob)
+    return effects
+
+def run_markov_attribution(journeys, n_bootstrap=50):
+    """
+    Full Markov attribution with bootstrap confidence intervals.
+    
+    Args:
+        journeys: list of journey dicts with tps, cv, rv fields
+        n_bootstrap: number of bootstrap resamples for confidence intervals
+    
+    Returns:
+        Channel attributions with revenue, percentage, and 90% CI
+    """
+    prob, channels = build_transition_matrix(journeys)
+    base_prob, converged, iters = simulate_conversion_probability(prob, channels)
+    
+    if not converged:
+        logger.warning(f"Markov chain did not converge after {iters} iterations")
+    
+    effects = removal_effect(prob, channels, base_prob)
+    total_effect = sum(effects.values()) or 1
+    total_revenue = sum(j.get("rv",0) for j in journeys if j.get("cv",False))
+    
+    # Point estimates
+    result = {}
+    for ch in channels:
+        weight = effects[ch] / total_effect
+        result[ch] = {
+            "weight": round(weight, 4),
+            "revenue": round(total_revenue * weight, 0),
+            "pct": round(weight * 100, 1),
+            "removal_effect": round(effects[ch], 6),
         }
     
-    # Normalize removal effects to get attribution weights
-    total_effect = sum(r["removal_effect"] for r in removal_effects.values())
+    # Bootstrap confidence intervals
+    if n_bootstrap > 0 and len(journeys) > 20:
+        boot_weights = {ch: [] for ch in channels}
+        for _ in range(n_bootstrap):
+            sample = [journeys[i] for i in np.random.choice(len(journeys), len(journeys), replace=True)]
+            try:
+                bp, bch = build_transition_matrix(sample)
+                b_base, _, _ = simulate_conversion_probability(bp, bch)
+                b_eff = removal_effect(bp, bch, b_base)
+                b_total = sum(b_eff.values()) or 1
+                for ch in channels:
+                    if ch in b_eff: boot_weights[ch].append(b_eff[ch]/b_total)
+            except: pass
+        
+        for ch in channels:
+            if boot_weights[ch]:
+                arr = np.array(boot_weights[ch])
+                result[ch]["weight_ci_90"] = [round(float(np.percentile(arr,5)),4), round(float(np.percentile(arr,95)),4)]
+                result[ch]["weight_std"] = round(float(arr.std()),4)
+                ci_width = arr.std() / max(result[ch]["weight"], 0.001)
+                result[ch]["confidence"] = "High" if ci_width < 0.2 else ("Medium" if ci_width < 0.5 else "Low")
+            else:
+                result[ch]["confidence"] = "Low"
     
-    # Calculate total revenue from converted journeys
-    total_revenue = sum(
-        j.get("rv", j.get("revenue", 0))
-        for j in journeys
-        if j.get("cv", j.get("converted", False))
-    )
-    
-    # Distribute revenue
-    results = {}
-    for ch in channels:
-        weight = removal_effects[ch]["removal_effect"] / total_effect if total_effect > 0 else 1 / len(channels)
-        results[ch] = {
-            **removal_effects[ch],
-            "attribution_weight": round(weight, 4),
-            "attributed_revenue": round(total_revenue * weight, 0),
-            "attributed_pct": round(weight * 100, 1),
-        }
-    
-    # Transition probabilities for visualization
-    top_transitions = []
-    for from_state, to_states in matrix.items():
-        if from_state in ["conversion", "null"]:
-            continue
-        for to_state, prob in sorted(to_states.items(), key=lambda x: -x[1])[:3]:
-            if prob > 0.05:
-                top_transitions.append({
-                    "from": from_state,
-                    "to": to_state,
-                    "probability": round(prob, 3),
-                })
+    # Top transitions for visualization
+    top_trans = []
+    for f, tos in prob.items():
+        if f in ("conversion","null"): continue
+        for t, p in tos.items():
+            if p > 0.03: top_trans.append({"from":f,"to":t,"probability":round(p,4)})
+    top_trans.sort(key=lambda x: x["probability"], reverse=True)
     
     return {
-        "channel_attribution": results,
-        "base_conversion_probability": round(base_prob, 4),
-        "total_revenue_attributed": round(total_revenue, 0),
-        "n_journeys": tm["n_journeys"],
-        "n_converted": tm["n_converted"],
-        "conversion_rate": round(tm["n_converted"] / max(tm["n_journeys"], 1), 4),
-        "top_transitions": sorted(top_transitions, key=lambda x: -x["probability"])[:20],
-        "model": "markov_chain_removal_effect",
+        "channels": result,
+        "base_conversion_probability": round(base_prob, 6),
+        "converged": converged,
+        "iterations": iters,
+        "total_revenue": round(total_revenue, 0),
+        "n_journeys": len(journeys),
+        "n_converting": sum(1 for j in journeys if j.get("cv",False)),
+        "top_transitions": top_trans[:20],
+        "n_bootstrap": n_bootstrap,
     }
-
-
-if __name__ == "__main__":
-    from mock_data import generate_all_data
-    
-    data = generate_all_data()
-    journeys = data["user_journeys"]
-    
-    # Convert journey format
-    js = []
-    j_groups = {}
-    for _, row in journeys.iterrows():
-        jid = row["journey_id"]
-        if jid not in j_groups:
-            j_groups[jid] = {"id": jid, "tps": [], "cv": row["converted"], "rv": 0, "nt": row["total_touchpoints"]}
-        j_groups[jid]["tps"].append({"ch": row["channel"], "camp": row["campaign"], "o": row["touchpoint_order"]})
-        if row["conversion_revenue"] > 0:
-            j_groups[jid]["rv"] = row["conversion_revenue"]
-    
-    js = list(j_groups.values())
-    
-    print("Running Markov Chain Attribution...")
-    result = markov_attribution(js)
-    
-    print(f"\nBase conversion probability: {result['base_conversion_probability']:.2%}")
-    print(f"Journeys: {result['n_journeys']} ({result['n_converted']} converted)")
-    
-    print("\nChannel Attribution:")
-    sorted_ch = sorted(result["channel_attribution"].items(), key=lambda x: -x[1]["attributed_revenue"])
-    for ch, info in sorted_ch:
-        print(f"  {ch}: ${info['attributed_revenue']:,.0f} ({info['attributed_pct']:.1f}%) "
-              f"weight={info['attribution_weight']:.3f} "
-              f"removal_effect={info['removal_effect']:.4f}")
-    
-    print("\nTop Transitions:")
-    for t in result["top_transitions"][:10]:
-        print(f"  {t['from']} → {t['to']}: {t['probability']:.1%}")

@@ -42,7 +42,7 @@ CAMPAIGNS_PER_CHANNEL = {
 REGIONS = ["North", "South", "East", "West"]
 PRODUCTS = ["Product_A", "Product_B", "Product_C"]
 
-MONTHS = pd.date_range("2025-01-01", periods=12, freq="MS")
+MONTHS = pd.date_range("2022-01-01", periods=48, freq="MS")  # 4 years for model training
 
 # Seasonality multipliers (index 0 = Jan)
 SEASONALITY = [0.85, 0.80, 0.95, 1.05, 1.10, 1.00, 0.90, 0.88, 1.05, 1.15, 1.25, 1.30]
@@ -65,7 +65,7 @@ def generate_campaign_performance() -> pd.DataFrame:
     rows = []
     
     for month_idx, month in enumerate(MONTHS):
-        season = SEASONALITY[month_idx]
+        season = SEASONALITY[month_idx % 12]  # Repeat yearly pattern
         
         for channel_name, channel_props in CHANNELS.items():
             campaigns = CAMPAIGNS_PER_CHANNEL[channel_name]
@@ -170,7 +170,7 @@ def generate_user_journeys(campaign_df: pd.DataFrame, n_journeys: int = 5000) ->
             journey_channels.append(ch)
         
         # Assign campaigns from each channel
-        base_date = np.random.choice(MONTHS)
+        base_date = pd.Timestamp(np.random.choice(MONTHS))
         converted = np.random.random() < 0.35  # 35% conversion rate for journeys
         revenue = _add_noise(np.random.choice([500, 1200, 2500, 5000]), 0.3) if converted else 0
         
@@ -178,7 +178,7 @@ def generate_user_journeys(campaign_df: pd.DataFrame, n_journeys: int = 5000) ->
             campaigns = CAMPAIGNS_PER_CHANNEL[ch]
             campaign = np.random.choice(campaigns)
             
-            tp_date = base_date + timedelta(days=tp_idx * np.random.randint(1, 14))
+            tp_date = base_date + timedelta(days=int(tp_idx) * int(np.random.randint(1, 14)))
             
             journeys.append({
                 "journey_id": f"J{journey_id:05d}",

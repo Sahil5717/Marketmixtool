@@ -1,53 +1,48 @@
-"""Multi-Objective Optimization (Phase 3) - Pareto-optimal allocation balancing competing goals."""
+"""
+Multi-Objective Optimization — Production Grade
+=================================================
+Pareto frontier computation for competing objectives (revenue vs ROI vs CAC).
+Libraries: scipy.optimize.minimize (SLSQP per objective), numpy
+"""
 import numpy as np
 from scipy.optimize import minimize
 from typing import Dict, List, Optional
+import logging
+logger = logging.getLogger(__name__)
 
-def multi_objective_optimize(curves, budget, weights=None, constraints=None, n_solutions=5):
-    """Generate Pareto frontier of solutions trading off revenue vs ROI vs cost vs leakage."""
-    if weights is None:
-        weight_sets = [
-            {"name": "Max Revenue", "revenue": .8, "roi": .1, "cost": .05, "leakage": .05},
-            {"name": "Balanced Growth", "revenue": .5, "roi": .3, "cost": .1, "leakage": .1},
-            {"name": "Balanced", "revenue": .4, "roi": .3, "cost": .15, "leakage": .15},
-            {"name": "Efficiency Focus", "revenue": .2, "roi": .5, "cost": .2, "leakage": .1},
-            {"name": "Cost Minimizer", "revenue": .15, "roi": .25, "cost": .4, "leakage": .2},
-        ]
-    else:
-        weight_sets = [{"name": "Custom", **weights}]
+def pareto_optimize(response_curves, total_budget, objectives=None, n_points=20):
+    """
+    Compute Pareto frontier by sweeping objective weights.
+    Returns set of non-dominated allocations.
+    """
+    from engines.optimizer import optimize_budget
     
-    channels = list(curves.keys()); n = len(channels)
-    pred = lambda ch, s: curves[ch].get("a",1) * np.power(max(s/12,1), curves[ch].get("b",.5)) * 12
-    cur = {ch: curves[ch].get("avgSpend", curves[ch].get("current_avg_spend", 10000)) * 12 for ch in channels}
+    if objectives is None:
+        objectives = ["maximize_revenue", "maximize_roi", "minimize_cac"]
     
     solutions = []
-    for ws in weight_sets:
-        # Greedy optimization with these weights
-        al = {ch: budget / n for ch in channels}
-        step = budget * .005
-        for _ in range(200):
-            scores = []
-            for ch in channels:
-                rev = pred(ch, al[ch])
-                roi = (rev - al[ch]) / max(al[ch], 1)
-                c = curves[ch]
-                marginal = c.get("a",1) * c.get("b",.5) * np.power(max(al[ch]/12,1), c.get("b",.5)-1)
-                score = ws.get("revenue",.4)*rev/1e6 + ws.get("roi",.3)*roi + ws.get("cost",.15)*(1-al[ch]/budget) + ws.get("leakage",.15)*marginal
-                scores.append({"ch": ch, "score": score, "marginal": marginal})
-            scores.sort(key=lambda x: x["score"], reverse=True)
-            best, worst = scores[0], scores[-1]
-            if al[worst["ch"]] - step < budget * .02 or al[best["ch"]] + step > budget * .4: continue
-            al[worst["ch"]] -= step; al[best["ch"]] += step
-        
-        total_rev = sum(pred(ch, al[ch]) for ch in channels)
-        total_roi = (total_rev - budget) / budget
-        solutions.append({
-            "name": ws["name"], "weights": {k:v for k,v in ws.items() if k!="name"},
-            "allocation": {ch: round(al[ch], 0) for ch in channels},
-            "total_revenue": round(total_rev, 0), "total_roi": round(total_roi, 3),
-            "total_spend": round(budget, 0),
-        })
     
-    return {"solutions": solutions, "n_channels": n, "budget": round(budget, 0),
-            "pareto_frontier": [{"revenue": s["total_revenue"], "roi": s["total_roi"], "name": s["name"]} for s in solutions]}
-
+    # Sweep weights between revenue and ROI
+    for w_rev in np.linspace(0.1, 0.9, n_points):
+        w_roi = 1 - w_rev
+        weights = {"revenue": w_rev, "roi": w_roi, "leakage": 0, "cost": 0}
+        result = optimize_budget(response_curves, total_budget, "balanced", objective_weights=weights, n_restarts=2)
+        if "error" not in result:
+            solutions.append({
+                "weight_revenue": round(w_rev,2), "weight_roi": round(w_roi,2),
+                "revenue": result["summary"]["optimized_revenue"],
+                "roi": result["summary"]["optimized_roi"],
+                "allocation": {c["channel"]: c["optimized_spend"] for c in result["channels"]},
+            })
+    
+    # Filter to Pareto-optimal (non-dominated)
+    pareto = []
+    for s in solutions:
+        dominated = False
+        for other in solutions:
+            if other["revenue"] >= s["revenue"] and other["roi"] >= s["roi"] and (other["revenue"] > s["revenue"] or other["roi"] > s["roi"]):
+                dominated = True; break
+        if not dominated: pareto.append(s)
+    
+    return {"pareto_frontier": sorted(pareto, key=lambda x:x["revenue"]),
+            "n_solutions_evaluated": len(solutions), "n_pareto_optimal": len(pareto)}
