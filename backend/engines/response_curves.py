@@ -32,8 +32,36 @@ def marginal_hill(x, a, b, K):
 def fit_response_curves(campaign_df, model_type="power_law"):
     """
     Fit response curves per channel with scipy.optimize.curve_fit.
+    model_type: "power_law", "hill", or "auto" (fits both, picks best R² per channel)
     Returns: fitted params, R², RMSE, confidence intervals, LOO-CV score, curve points.
     """
+    if model_type == "auto":
+        # Fit both models, keep the one with better R² per channel
+        results_pl = fit_response_curves(campaign_df, model_type="power_law")
+        results_hill = fit_response_curves(campaign_df, model_type="hill")
+        results = {}
+        for ch in set(list(results_pl.keys()) + list(results_hill.keys())):
+            pl = results_pl.get(ch, {})
+            hl = results_hill.get(ch, {})
+            if "error" in pl and "error" in hl:
+                results[ch] = pl  # both failed
+            elif "error" in pl:
+                results[ch] = hl
+                results[ch]["_auto_selected"] = "hill"
+            elif "error" in hl:
+                results[ch] = pl
+                results[ch]["_auto_selected"] = "power_law"
+            else:
+                pl_r2 = pl.get("r_squared", 0)
+                hl_r2 = hl.get("r_squared", 0)
+                if hl_r2 > pl_r2 + 0.02:  # Hill needs meaningfully better R² to justify complexity
+                    results[ch] = hl
+                    results[ch]["_auto_selected"] = "hill"
+                else:
+                    results[ch] = pl
+                    results[ch]["_auto_selected"] = "power_law"
+        return results
+
     results = {}
     for channel in campaign_df["channel"].unique():
         ch_data = campaign_df[campaign_df["channel"] == channel]

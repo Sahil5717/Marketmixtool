@@ -243,8 +243,28 @@ def _run_all_engines():
                     elif isinstance(md, dict): attr_dicts[mn] = md
                 except: pass
             print(f"[OK] Attribution: {len(attr_dicts)} models")
+            # Markov attribution (needs journey data)
+            try:
+                from engines.markov_attribution import run_markov_attribution
+                j_groups = {}
+                for _, r in _state["journey_data"].iterrows():
+                    jid = str(r.get("journey_id", r.get("id", "")))
+                    if jid not in j_groups: j_groups[jid] = {"tps":[], "cv":False, "rv":0}
+                    j_groups[jid]["tps"].append({"ch": str(r.get("channel","")), "o": int(r.get("touchpoint_order",0))})
+                    j_groups[jid]["cv"] = bool(r.get("converted", False))
+                    j_groups[jid]["rv"] = float(r.get("conversion_revenue", 0))
+                markov_result = run_markov_attribution(list(j_groups.values()))
+                markov_ch = markov_result.get("channels", {})
+                if markov_ch:
+                    attr_dicts["markov"] = {ch: info.get("revenue", info.get("attributed_revenue",0)) for ch, info in markov_ch.items()}
+                    print(f"[OK] Markov: {len(attr_dicts['markov'])} channels")
+                else:
+                    print("[WARN] Markov: 0 channels returned")
+            except Exception as e:
+                print(f"[WARN] Markov: {e}")
     except Exception as e:
         print(f"[FAIL] Attribution: {e}"); _state["attribution"] = {}
+    _state["_attr_dicts"] = attr_dicts
     
     # Optimization
     try:
@@ -386,7 +406,8 @@ def get_full_state():
     # Build rows array matching frontend shape
     col_map = {"channel":"ch","campaign":"camp","channel_type":"ct","impressions":"imps",
                "conversions":"conv","revenue":"rev","bounce_rate":"br",
-               "avg_session_duration_sec":"sd","form_completion_rate":"fc","nps_score":"nps"}
+               "avg_session_duration_sec":"sd","form_completion_rate":"fc","nps_score":"nps",
+               "region":"reg","product":"prod"}
     rows = []
     for _, r in df.iterrows():
         row = {}
@@ -451,9 +472,9 @@ def get_full_state():
                 "conf":r.get("confidence","Medium"),"effort":r.get("effort","Medium"),
                 "id":r.get("id",""),"priority":r.get("priority",0)})
     
-    # Build attribution in frontend shape (simple {channel: revenue} dicts)
-    attr_data = {}
-    if _state["attribution"]:
+    # Attribution (use pre-built dicts from engine run, includes markov)
+    attr_data = _state.get("_attr_dicts", {})
+    if not attr_data and _state["attribution"]:
         for model_name, model_data in _state["attribution"].items():
             if hasattr(model_data, "groupby"):
                 attr_data[model_name] = model_data.groupby("channel")["attributed_revenue"].sum().to_dict()
@@ -587,6 +608,53 @@ def get_business_case():
             {"phase": "Strategic (90+ days)", "actions": [r for r in recs if r.get("effort") == "High"][:3]},
         ] if isinstance(recs, list) else [],
     })
+
+@app.get("/api/executive-summary")
+def get_executive_summary():
+    """Generate a downloadable executive summary as text."""
+    if not all([_state["optimization"], _state["pillars"], _state["diagnostics"], _state["campaign_data"] is not None]):
+        raise HTTPException(400, "Run full analysis first")
+    df = _state["reporting_data"] if _state["reporting_data"] is not None else _state["campaign_data"]
+    opt = _state["optimization"]; pil = _state["pillars"]; recs = _state["diagnostics"]
+    ts = float(df["spend"].sum()); tr = float(df["revenue"].sum())
+    sm = opt.get("summary", {})
+    lines = [
+        "YIELD INTELLIGENCE — EXECUTIVE SUMMARY",
+        "=" * 50, "",
+        "PORTFOLIO OVERVIEW",
+        f"  Total Marketing Spend:   ${ts:,.0f}",
+        f"  Total Revenue:           ${tr:,.0f}",
+        f"  Portfolio ROI:           {(tr-ts)/max(ts,1):.2f}x",
+        f"  ROAS:                    {tr/max(ts,1):.2f}x", "",
+        "OPTIMIZATION RESULTS",
+        f"  Current Revenue:         ${sm.get('current_revenue',0):,.0f}",
+        f"  Optimized Revenue:       ${sm.get('optimized_revenue',0):,.0f}",
+        f"  Revenue Uplift:          {sm.get('uplift_pct',0):.1f}%",
+        f"  ROI Improvement:         {sm.get('current_roi',0):.2f}x → {sm.get('optimized_roi',0):.2f}x", "",
+        "VALUE AT RISK",
+        f"  Total Value at Risk:     ${pil.get('total_value_at_risk',0):,.0f}",
+        f"  Revenue Leakage:         ${pil.get('revenue_leakage',{}).get('total_leakage',0):,.0f}",
+        f"  CX Suppression:          ${pil.get('experience_suppression',{}).get('total_suppression',0):,.0f}",
+        f"  Avoidable Cost:          ${pil.get('avoidable_cost',{}).get('total_avoidable_cost',0):,.0f}", "",
+        "CHANNEL ALLOCATION (Top changes)", "-" * 50,
+    ]
+    for c in sorted(opt.get("channels",[]), key=lambda x: abs(x.get("change_pct",0)), reverse=True)[:8]:
+        ch = c.get("channel","")
+        lines.append(f"  {ch:20s}  ${c.get('current_spend',0):>12,.0f} → ${c.get('optimized_spend',0):>12,.0f}  ({c.get('change_pct',0):+.1f}%)")
+    lines += ["", "TOP RECOMMENDATIONS", "-" * 50]
+    for i, r in enumerate(recs[:8]):
+        lines.append(f"  {i+1}. [{r.get('type','')}] {r.get('channel','')}: {r.get('action','')}")
+        if r.get('impact',0): lines.append(f"     Impact: ${abs(r['impact']):,.0f}  Confidence: {r.get('confidence','')}")
+    lines += ["", "IMPLEMENTATION ROADMAP", "-" * 50]
+    for phase, effort in [("Immediate (0-30 days)","Low"),("Short-term (30-90 days)","Medium"),("Strategic (90+ days)","High")]:
+        phase_recs = [r for r in recs if r.get("effort")==effort][:3]
+        if phase_recs:
+            lines.append(f"  {phase}")
+            for r in phase_recs: lines.append(f"    - {r.get('channel','')}: {r.get('action','')}")
+    lines += ["", "-" * 50, "Generated by Yield Intelligence Platform", "All estimates are directional. Validate with holdout tests before scaling."]
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse("\n".join(lines), media_type="text/plain",
+                            headers={"Content-Disposition": "attachment; filename=executive_summary.txt"})
 
 @app.get("/api/trend-analysis")
 def get_trend_analysis():
