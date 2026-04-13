@@ -84,11 +84,13 @@ def compute_experience_suppression(df):
             
             total_suppression += suppressed_rev
             ch_col = "channel"; cp_col = "campaign" if "campaign" in row.index else "camp"
+            avg_bounce = float(row.get("bounce_sum", 0)) / max(int(row.get("count", 1)), 1)
             suppressions.append({
                 "channel": row[ch_col], "campaign": row[cp_col],
                 "cvr": round(float(row["cvr"]), 4), "median_cvr": round(float(median_cvr), 4),
                 "cvr_gap": round(float(gap), 4),
                 "suppressed_revenue": round(float(suppressed_rev), 0),
+                "bounce_rate": round(avg_bounce, 3),
                 "clicks": int(row["clicks"]),
                 "z_statistic": round(float(z), 3),
                 "p_value": round(float(p_val), 4),

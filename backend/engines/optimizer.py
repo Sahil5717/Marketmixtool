@@ -59,11 +59,11 @@ def optimize_budget(
     locked = locked_channels or {}
     channels = [ch for ch in response_curves if ch not in locked and "error" not in response_curves[ch]]
     n = len(channels)
-    if n == 0: return {"error": "No optimizable channels"}
+    if n == 0: return {"channels":[], "summary":{"total_budget":total_budget,"current_revenue":0,"optimized_revenue":0,"revenue_uplift":0,"uplift_pct":0,"current_roi":0,"optimized_roi":0}, "optimizer_info":{"converged":False,"warning":"No optimizable channels"}}
 
     locked_total = sum(locked.values())
     avail = total_budget - locked_total
-    if avail <= 0: return {"error": "Locked spend exceeds budget"}
+    if avail <= 0: return {"channels":[], "summary":{"total_budget":total_budget,"current_revenue":0,"optimized_revenue":0,"revenue_uplift":0,"uplift_pct":0,"current_roi":0,"optimized_roi":0}, "optimizer_info":{"converged":False,"warning":"Locked spend exceeds budget"}}
 
     if current_allocation is None:
         current_allocation = {ch: response_curves[ch].get("current_avg_spend", avail/n/12)*12 for ch in channels}
@@ -110,7 +110,32 @@ def optimize_budget(
             logger.warning(f"Restart {restart} failed: {e}")
 
     if best_result is None or not best_result.success:
-        return {"error": "Optimization did not converge", "message": str(best_result)}
+        logger.warning(f"Optimization did not converge: {best_result}")
+        # Return current allocation as-is (no change) so downstream engines don't crash
+        channel_results = []
+        for ch in channels:
+            cur = current_allocation.get(ch, avail/n)
+            cur_rev = _predict_revenue(cur, response_curves[ch])
+            mROI = _marginal_revenue(cur, response_curves[ch])
+            channel_results.append({
+                "channel": ch, "current_spend": round(cur, 0), "optimized_spend": round(cur, 0),
+                "change_pct": 0, "current_revenue": round(cur_rev, 0), "optimized_revenue": round(cur_rev, 0),
+                "revenue_delta": 0, "current_roi": round((cur_rev-cur)/max(cur,1), 3),
+                "optimized_roi": round((cur_rev-cur)/max(cur,1), 3), "marginal_roi": round(mROI, 4), "locked": False,
+            })
+        for ch, sp in locked.items():
+            if ch in response_curves and "error" not in response_curves[ch]:
+                rev = _predict_revenue(sp, response_curves[ch])
+                channel_results.append({"channel":ch,"current_spend":round(sp,0),"optimized_spend":round(sp,0),
+                    "change_pct":0,"current_revenue":round(rev,0),"optimized_revenue":round(rev,0),
+                    "revenue_delta":0,"current_roi":round((rev-sp)/max(sp,1),3),
+                    "optimized_roi":round((rev-sp)/max(sp,1),3),"marginal_roi":0,"locked":True})
+        total_rev = sum(c["current_revenue"] for c in channel_results)
+        return {"channels": channel_results, "summary": {
+            "total_budget": total_budget, "current_revenue": total_rev, "optimized_revenue": total_rev,
+            "revenue_uplift": 0, "uplift_pct": 0, "current_roi": round((total_rev-total_budget)/max(total_budget,1),3),
+            "optimized_roi": round((total_rev-total_budget)/max(total_budget,1),3),
+        }, "optimizer_info": {"converged": False, "warning": "SLSQP did not converge. Showing current allocation."}}
 
     opt_spend = best_result.x
 

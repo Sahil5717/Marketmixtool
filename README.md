@@ -159,6 +159,27 @@ cd backend && python test_integration.py
 | statsmodels | Forecasting, Geo-lift | ARIMA, ADF test, OLS, seasonal decomposition |
 | prophet | Forecasting | Time-series with seasonality + changepoints |
 
+## Current Limitations (honest assessment)
+
+**What this IS:** A consulting-grade accelerator/demo that can support internal walkthroughs, client presentations, and data exploration. The backend engines are real and produce statistically meaningful outputs.
+
+**What this is NOT yet:** A production-grade enterprise SaaS platform.
+
+| Area | Status | Detail |
+|------|--------|--------|
+| Frontend | Demo-grade | CDN-loaded React with Babel in-browser. Works reliably but is not a production build (no Vite/webpack bundle). |
+| Bayesian MMM | Environment-sensitive | PyMC MCMC runs in full Python environments. Falls back to OLS+bootstrap on lightweight deployments. The fallback is valid but has wider uncertainty. |
+| State management | In-memory | Single-user, no persistence between server restarts. Fine for demo; needs database for multi-user. |
+| Auth / RBAC | None | No authentication, no role-based access control. Add before any client-facing deployment. |
+| Model governance | Documented | See `docs/model_hierarchy.md` for which outputs are decision-grade vs directional. |
+
+**To move from 7/10 prototype to 9/10 production:**
+1. Build frontend with Vite (bundled, minified, no Babel-in-browser)
+2. Add PostgreSQL for persistent state + multi-user sessions
+3. Containerize PyMC properly (full `python:3.12` image, not slim)
+4. Add auth + audit logging
+5. Add scenario save/load + export versioning
+
 ## License
 
 MIT License. See [LICENSE](LICENSE).

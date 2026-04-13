@@ -226,7 +226,7 @@ def _run_all_engines():
     
     # Response curves
     try:
-        _state["curves"] = fit_response_curves(training_df, model_type="power_law")
+        _state["curves"] = fit_response_curves(training_df, model_type=_state.get("_model_type", "power_law"))
         print(f"[OK] Curves: {len(_state['curves'])} channels")
     except Exception as e:
         print(f"[FAIL] Curves: {e}"); _state["curves"] = {}
@@ -280,17 +280,19 @@ def _run_all_engines():
 
 
 @app.post("/api/run-analysis")
-def run_full_analysis():
-    """Run all engines on current data."""
+def run_full_analysis(model_type: str = "power_law"):
+    """Run all engines on current data. Accepts model_type: power_law or hill."""
     if _state["campaign_data"] is None:
         raise HTTPException(400, "No data loaded")
+    _state["_model_type"] = model_type
     _run_all_engines()
     return _j({
         "status": "complete",
+        "model_type": model_type,
         "response_curves_channels": list(_state["curves"].keys()) if _state["curves"] else [],
         "recommendations_count": len(_state["diagnostics"]) if _state["diagnostics"] else 0,
-        "total_value_at_risk": _state["pillars"]["total_value_at_risk"] if _state["pillars"] else 0,
-        "optimization_uplift": _state["optimization"]["summary"]["uplift_pct"] if _state["optimization"] else 0,
+        "total_value_at_risk": _state["pillars"].get("total_value_at_risk", 0) if _state["pillars"] else 0,
+        "optimization_uplift": _state["optimization"].get("summary",{}).get("uplift_pct",0) if _state["optimization"] else 0,
     })
 
 
@@ -526,13 +528,34 @@ def get_recommendations():
     return _j(_state["diagnostics"])
 
 @app.post("/api/optimize")
-def run_optimization(total_budget: Optional[float] = None, objective: str = "balanced"):
+def run_optimization(
+    total_budget: Optional[float] = None,
+    objective: str = "balanced",
+    model_type: str = "power_law",
+    weight_revenue: float = 0.4,
+    weight_roi: float = 0.3,
+    weight_leakage: float = 0.15,
+    weight_cost: float = 0.15,
+):
+    """Run optimization with custom objective, weights, and model type."""
     _ensure_analysis()
     if _state["curves"] is None: raise HTTPException(400, "No data loaded — upload data or call /api/load-mock-data first")
+    
+    # Re-fit curves if model type changed
+    if model_type != _state.get("_model_type", "power_law"):
+        _state["_model_type"] = model_type
+        training_df = _state.get("training_data")
+        if training_df is None: training_df = _state["campaign_data"]
+        training_df = _normalize_date_columns(training_df)
+        _state["curves"] = fit_response_curves(training_df, model_type=model_type)
+    
     if total_budget is None: total_budget = float(_state["campaign_data"]["spend"].sum())
-    result = optimize_budget(_state["curves"], total_budget, objective=objective)
+    weights = {"revenue": weight_revenue, "roi": weight_roi, "leakage": weight_leakage, "cost": weight_cost}
+    result = optimize_budget(_state["curves"], total_budget, objective=objective, objective_weights=weights)
     _state["optimization"] = result
-    _state["pillars"] = run_three_pillars(_state["campaign_data"], result)  # ✅ fixed name
+    reporting_df = _state.get("reporting_data")
+    if reporting_df is None: reporting_df = _state["campaign_data"]
+    _state["pillars"] = run_three_pillars(reporting_df, result)
     return _j(result)
 
 @app.get("/api/sensitivity")

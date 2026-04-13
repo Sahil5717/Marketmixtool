@@ -132,8 +132,11 @@ def generate_recommendations(df, response_curves, attribution, significance_leve
     if attribution:
         lt = attribution.get("last_touch", {})
         ln = attribution.get("linear", {})
+        # Convert DataFrames to {channel: revenue} dicts if needed
+        if hasattr(lt, "groupby"): lt = lt.groupby("channel")["attributed_revenue"].sum().to_dict()
+        if hasattr(ln, "groupby"): ln = ln.groupby("channel")["attributed_revenue"].sum().to_dict()
         for ch in lt:
-            lt_v = lt.get(ch,0); ln_v = ln.get(ch,0)
+            lt_v = float(lt.get(ch, 0)); ln_v = float(ln.get(ch, 0))
             if lt_v > 0 and ln_v/lt_v > 1.4:
                 recs.append({
                     "type": "MAINTAIN", "channel": ch,
@@ -147,5 +150,6 @@ def generate_recommendations(df, response_curves, attribution, significance_leve
     recs.sort(key=lambda x: abs(x.get("impact",0)), reverse=True)
     for i, r in enumerate(recs):
         r["id"] = f"REC-{i+1:03d}"; r["priority"] = i+1; r["status"] = "pending"
+        r.setdefault("campaign", "")
     
     return recs
