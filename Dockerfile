@@ -23,7 +23,6 @@ RUN pip install --no-cache-dir reportlab python-pptx 2>/dev/null || echo "[SKIP]
 # Copy application
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/
-COPY frontend-dist/ ./frontend-dist/
 COPY templates/ ./templates/
 COPY docs/ ./docs/
 COPY LICENSE ./
