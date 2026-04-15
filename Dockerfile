@@ -10,9 +10,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Core deps (must succeed)
 RUN pip install --no-cache-dir \
     numpy pandas scipy scikit-learn fastapi uvicorn \
-    python-multipart openpyxl statsmodels
+    python-multipart openpyxl statsmodels \
+    python-jose passlib bcrypt==4.0.1
 
-# Scientific stack (fallback-safe, separate layers for caching)
+# Scientific stack (fallback-safe)
 RUN pip install --no-cache-dir prophet 2>/dev/null || echo "[SKIP] Prophet — linear fallback active"
 RUN pip install --no-cache-dir pymc arviz 2>/dev/null || echo "[SKIP] PyMC — MLE/OLS fallback active"
 
@@ -22,6 +23,7 @@ RUN pip install --no-cache-dir reportlab python-pptx 2>/dev/null || echo "[SKIP]
 # Copy application
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/
+COPY frontend-dist/ ./frontend-dist/
 COPY templates/ ./templates/
 COPY docs/ ./docs/
 COPY LICENSE ./

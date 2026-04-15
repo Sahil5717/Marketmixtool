@@ -6,7 +6,7 @@ Run: uvicorn api:app --reload --port 8000
 import os, sys, json, tempfile
 from typing import Optional, Dict
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
@@ -14,6 +14,10 @@ import pandas as pd
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
+
+# Auth & persistence
+from auth import register_user, login_user, get_current_user, require_role, check_permission
+from persistence import init_db, save_session, load_session, save_scenario, list_scenarios, load_scenario, compare_scenarios
 
 # ═══ CORRECTED IMPORTS — matching upgraded engine function names ═══
 from mock_data import generate_all_data, export_to_csv
@@ -41,6 +45,8 @@ app = FastAPI(title="Marketing ROI & Budget Optimization Engine", version="2.0.0
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 from engines.data_splitter import split_data, validate_split
+from engines.insights import generate_insights, compute_qoq_yoy_trends, generate_smart_recommendations
+from engines.external_data import process_competitive_data, process_market_events, process_market_trends, merge_external_recommendations
 
 # In-memory state
 _state: Dict = {
@@ -51,6 +57,14 @@ _state: Dict = {
     "data_split": None,  # reporting vs training split metadata
     "reporting_data": None,  # last 12 months for ROI/KPIs
     "training_data": None,   # full history for models
+    "insights": None, "smart_recs": None,
+    "qoq_yoy": None, "channel_trends": None,
+    "model_selections": {
+        "attribution": "markov", "response_curves": "auto",
+        "mmm": "auto", "forecasting": "prophet", "optimizer": "slsqp",
+    },
+    "external_competitive": None, "external_events": None, "external_trends": None,
+    "competitive_result": None, "events_result": None, "trends_result": None,
 }
 
 class NumpyEncoder(json.JSONEncoder):
@@ -182,6 +196,98 @@ async def upload_journey_file(file: UploadFile = File(...)):
         os.unlink(tmp_path)
 
 
+@app.post("/api/upload-competitive")
+async def upload_competitive(file: UploadFile = File(...)):
+    """Upload competitive intelligence CSV (SEMrush/SimilarWeb export)."""
+    suffix = Path(file.filename).suffix.lower()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        content = await file.read(); tmp.write(content); tmp_path = tmp.name
+    try:
+        df = pd.read_csv(tmp_path) if suffix == ".csv" else pd.read_excel(tmp_path)
+        required = {"date", "competitor", "channel", "estimated_spend"}
+        missing = required - set(df.columns)
+        if missing: raise HTTPException(400, f"Missing columns: {missing}. Required: {required}")
+        _state["external_competitive"] = df
+        # Process immediately if campaign data exists
+        if _state["campaign_data"] is not None:
+            reporting_df = _state["reporting_data"] if _state.get("reporting_data") is not None else _state["campaign_data"]
+            _state["competitive_result"] = process_competitive_data(df, reporting_df)
+            # Merge into smart recs
+            if _state.get("smart_recs"):
+                _state["smart_recs"] = merge_external_recommendations(
+                    _state["smart_recs"], comp_result=_state["competitive_result"])
+            return _j({"filename": file.filename, "rows": len(df), "competitors": int(df["competitor"].nunique()),
+                        "channels": int(df["channel"].nunique()), "recommendations": len(_state["competitive_result"].get("recommendations",[])),
+                        "status": "Competitive data loaded and processed"})
+        return _j({"filename": file.filename, "rows": len(df), "status": "Competitive data loaded. Load campaign data first to process."})
+    finally:
+        os.unlink(tmp_path)
+
+@app.post("/api/upload-events")
+async def upload_events(file: UploadFile = File(...)):
+    """Upload market events CSV (seasonal calendar, competitor actions, market shifts)."""
+    suffix = Path(file.filename).suffix.lower()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        content = await file.read(); tmp.write(content); tmp_path = tmp.name
+    try:
+        df = pd.read_csv(tmp_path) if suffix == ".csv" else pd.read_excel(tmp_path)
+        required = {"event_date", "event_type", "event_name", "impact_direction"}
+        missing = required - set(df.columns)
+        if missing: raise HTTPException(400, f"Missing columns: {missing}. Required: {required}")
+        _state["external_events"] = df
+        if _state["campaign_data"] is not None:
+            reporting_df = _state["reporting_data"] if _state.get("reporting_data") is not None else _state["campaign_data"]
+            _state["events_result"] = process_market_events(df, reporting_df)
+            if _state.get("smart_recs"):
+                _state["smart_recs"] = merge_external_recommendations(
+                    _state["smart_recs"], events_result=_state["events_result"])
+            return _j({"filename": file.filename, "events": len(df),
+                        "upcoming": _state["events_result"]["summary"]["upcoming_events"],
+                        "recommendations": len(_state["events_result"].get("recommendations",[])),
+                        "status": "Market events loaded and processed"})
+        return _j({"filename": file.filename, "rows": len(df), "status": "Events loaded. Load campaign data first to process."})
+    finally:
+        os.unlink(tmp_path)
+
+@app.post("/api/upload-trends")
+async def upload_trends(file: UploadFile = File(...)):
+    """Upload market trends CSV (CPC/CPM trends, benchmarks, Google Trends)."""
+    suffix = Path(file.filename).suffix.lower()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        content = await file.read(); tmp.write(content); tmp_path = tmp.name
+    try:
+        df = pd.read_csv(tmp_path) if suffix == ".csv" else pd.read_excel(tmp_path)
+        required = {"date", "metric_type", "value"}
+        missing = required - set(df.columns)
+        if missing: raise HTTPException(400, f"Missing columns: {missing}. Required: {required}")
+        _state["external_trends"] = df
+        if _state["campaign_data"] is not None:
+            reporting_df = _state["reporting_data"] if _state.get("reporting_data") is not None else _state["campaign_data"]
+            _state["trends_result"] = process_market_trends(df, reporting_df)
+            if _state.get("smart_recs"):
+                _state["smart_recs"] = merge_external_recommendations(
+                    _state["smart_recs"], trends_result=_state["trends_result"])
+            return _j({"filename": file.filename, "metric_types": list(df["metric_type"].unique()),
+                        "channels_covered": int(df["channel"].nunique()) if "channel" in df.columns else 0,
+                        "recommendations": len(_state["trends_result"].get("recommendations",[])),
+                        "status": "Market trends loaded and processed"})
+        return _j({"filename": file.filename, "rows": len(df), "status": "Trends loaded. Load campaign data first to process."})
+    finally:
+        os.unlink(tmp_path)
+
+@app.get("/api/external-data-status")
+def get_external_data_status():
+    """Check what external data is loaded."""
+    return _j({
+        "competitive": {"loaded": _state["external_competitive"] is not None,
+            "summary": (_state.get("competitive_result") or {}).get("summary", {})},
+        "events": {"loaded": _state["external_events"] is not None,
+            "summary": (_state.get("events_result") or {}).get("summary", {})},
+        "trends": {"loaded": _state["external_trends"] is not None,
+            "summary": (_state.get("trends_result") or {}).get("summary", {})},
+    })
+
+
 def _normalize_date_columns(df):
     """Ensure both 'date' and 'month' columns exist for cross-engine compatibility."""
     df = df.copy()
@@ -297,6 +403,64 @@ def _run_all_engines():
     except Exception as e: print(f"[FAIL] Funnel: {e}"); _state["funnel_analysis"] = {}
     try: _state["roi_analysis"] = compute_all_roi(reporting_df, _state["curves"]); print("[OK] ROI")
     except Exception as e: print(f"[FAIL] ROI: {e}"); _state["roi_analysis"] = []
+    
+    # Insights & Smart Recommendations
+    try:
+        _state["insights"] = generate_insights(
+            reporting_df, _state["curves"], _state["optimization"], _state["pillars"],
+            attr_dicts, _state.get("mmm_result"), _state.get("trend_analysis"), _state.get("funnel_analysis"))
+        print(f"[OK] Insights: {_state['insights'].get('generated_count',0)} generated")
+    except Exception as e:
+        print(f"[FAIL] Insights: {e}"); _state["insights"] = {"executive_headlines":[],"channel_stories":[],"cross_model_insights":[],"risk_narratives":[],"opportunity_narratives":[],"generated_count":0}
+    
+    try:
+        _state["smart_recs"] = generate_smart_recommendations(
+            reporting_df, _state["curves"], attr_dicts, _state["optimization"],
+            _state["pillars"], _state.get("trend_analysis"), _state.get("mmm_result"),
+            _state.get("model_selections"))
+        print(f"[OK] Smart Recs: {len(_state['smart_recs'])}")
+    except Exception as e:
+        print(f"[FAIL] Smart Recs: {e}"); _state["smart_recs"] = []
+    
+    # QoQ/YoY trends
+    try:
+        _state["qoq_yoy"] = compute_qoq_yoy_trends(reporting_df)
+        # Per-channel trends
+        ch_trends = {}
+        for ch in reporting_df["channel"].unique():
+            ch_trends[ch] = compute_qoq_yoy_trends(reporting_df, channel=ch)
+        _state["channel_trends"] = ch_trends
+        print(f"[OK] QoQ/YoY: {len(ch_trends)} channels")
+    except Exception as e:
+        print(f"[FAIL] QoQ/YoY: {e}"); _state["qoq_yoy"] = {}; _state["channel_trends"] = {}
+    
+    # External data re-processing (if loaded)
+    try:
+        if _state.get("external_competitive") is not None:
+            _state["competitive_result"] = process_competitive_data(_state["external_competitive"], reporting_df)
+            print(f"[OK] Competitive: {len(_state['competitive_result'].get('recommendations',[]))} recs")
+        if _state.get("external_events") is not None:
+            _state["events_result"] = process_market_events(_state["external_events"], reporting_df)
+            print(f"[OK] Events: {_state['events_result']['summary']['upcoming_events']} upcoming")
+        if _state.get("external_trends") is not None:
+            _state["trends_result"] = process_market_trends(_state["external_trends"], reporting_df)
+            print(f"[OK] Trends: {_state['trends_result']['summary']['n_recommendations']} recs")
+        
+        # Merge external recs into smart recs
+        if _state.get("smart_recs") and any([_state.get("competitive_result"), _state.get("events_result"), _state.get("trends_result")]):
+            _state["smart_recs"] = merge_external_recommendations(
+                _state["smart_recs"],
+                _state.get("competitive_result"), _state.get("events_result"), _state.get("trends_result"))
+            print(f"[OK] Merged recs: {len(_state['smart_recs'])} total")
+    except Exception as e:
+        print(f"[FAIL] External data: {e}")
+    
+    # Persist session
+    try:
+        save_session("default", _state, user_id=0)
+        print("[OK] Session persisted to SQLite")
+    except Exception as e:
+        print(f"[WARN] Session persist failed: {e}")
 
 
 @app.post("/api/run-analysis")
@@ -502,6 +666,27 @@ def get_full_state():
         "curves": curves_data,
         "tS": tS,
         "recs": recs_data,
+        "smartRecs": _state.get("smart_recs") or [],
+        "insights": _state.get("insights") or {},
+        "qoqYoy": _state.get("qoq_yoy") or {},
+        "channelTrends": _state.get("channel_trends") or {},
+        "modelSelections": _state.get("model_selections") or {},
+        "modelDiagnostics": {
+            "response_curves": {"model": _state.get("_model_type","power_law"), "channels": len(curves_data), "avg_r2": round(sum(c.get("r2",0) for c in (_state.get("curves") or {}).values() if "error" not in c) / max(len(curves_data),1), 3)},
+            "mmm": {"method": (_state.get("mmm_result") or {}).get("method","not_run"), "r2": (_state.get("mmm_result") or {}).get("model_diagnostics",{}).get("r_squared",0)},
+            "forecasting": {"method": "prophet" if _state.get("forecast") else "not_run"},
+            "optimizer": {"converged": (_state.get("optimization") or {}).get("optimizer_info",{}).get("converged", True)},
+        },
+        "externalData": {
+            "competitive": (_state.get("competitive_result") or {}).get("summary"),
+            "events": (_state.get("events_result") or {}).get("summary"),
+            "trends": (_state.get("trends_result") or {}).get("summary"),
+            "shareOfVoice": (_state.get("competitive_result") or {}).get("share_of_voice"),
+            "benchmarks": (_state.get("trends_result") or {}).get("benchmarks"),
+            "costAdjustments": (_state.get("trends_result") or {}).get("cost_adjustments"),
+            "eventCalendar": [e for e in ((_state.get("events_result") or {}).get("events") or []) if e.get("is_upcoming")],
+            "categoryGrowth": (_state.get("trends_result") or {}).get("category_growth"),
+        },
         "dataReadiness": _state.get("data_split"),
         "apiMode": True,
         "warnings": _get_data_warnings(),
@@ -578,6 +763,41 @@ def run_optimization(
     if reporting_df is None: reporting_df = _state["campaign_data"]
     _state["pillars"] = run_three_pillars(reporting_df, result)
     return _j(result)
+
+@app.post("/api/model-selections")
+def update_model_selections(
+    attribution: str = "markov",
+    response_curves: str = "auto",
+    mmm: str = "auto",
+    forecasting: str = "prophet",
+    optimizer: str = "slsqp",
+):
+    """Update model selections and re-run full engine chain. Auto-triggers on model change."""
+    _ensure_analysis()
+    _state["model_selections"] = {
+        "attribution": attribution, "response_curves": response_curves,
+        "mmm": mmm, "forecasting": forecasting, "optimizer": optimizer,
+    }
+    # Map response curve selection to _model_type
+    rc_map = {"auto":"auto","power_law":"power_law","hill":"hill","growth":"power_law","saturation":"hill"}
+    _state["_model_type"] = rc_map.get(response_curves, "auto")
+    # Re-run all engines with new selections
+    _run_all_engines()
+    return _j({"status": "re-run complete", "model_selections": _state["model_selections"],
+               "smart_recs_count": len(_state.get("smart_recs") or []),
+               "insights_count": (_state.get("insights") or {}).get("generated_count", 0)})
+
+@app.get("/api/insights")
+def get_insights():
+    """Get all narrative insights."""
+    _ensure_analysis()
+    return _j({
+        "insights": _state.get("insights") or {},
+        "smart_recs": _state.get("smart_recs") or [],
+        "qoq_yoy": _state.get("qoq_yoy") or {},
+        "channel_trends": _state.get("channel_trends") or {},
+        "model_selections": _state.get("model_selections") or {},
+    })
 
 @app.get("/api/sensitivity")
 def get_sensitivity(objective: str = "balanced"):
@@ -782,6 +1002,121 @@ def get_model_health():
 from starlette.staticfiles import StaticFiles
 
 frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
+# ═══════════════════════════════════════════════════════
+#  AUTH ENDPOINTS
+# ═══════════════════════════════════════════════════════
+
+@app.post("/api/auth/register")
+def api_register(username: str, password: str, role: str = "analyst"):
+    """Register a new user. Returns JWT token."""
+    return _j(register_user(username, password, role))
+
+@app.post("/api/auth/login")
+def api_login(username: str, password: str):
+    """Login and get JWT token."""
+    return _j(login_user(username, password))
+
+@app.get("/api/auth/me")
+async def api_me(user=Depends(get_current_user)):
+    """Get current user info from token."""
+    if user is None:
+        return _j({"authenticated": False, "role": "anonymous"})
+    return _j({"authenticated": True, "user_id": user["id"], "username": user["username"], "role": user["role"]})
+
+
+# ═══════════════════════════════════════════════════════
+#  SCENARIO ENDPOINTS
+# ═══════════════════════════════════════════════════════
+
+@app.post("/api/scenarios/save")
+def api_save_scenario(name: str, description: str = ""):
+    """Save current optimizer state as a named scenario."""
+    if _state["optimization"] is None:
+        raise HTTPException(400, "Run optimization first")
+    opt = _state["optimization"]
+    params = {
+        "model_selections": _state.get("model_selections", {}),
+        "model_type": _state.get("_model_type", "auto"),
+        "total_budget": opt.get("summary", {}).get("total_budget", 0),
+        "objective": "balanced",
+    }
+    results = {
+        "summary": opt.get("summary", {}),
+        "channels": opt.get("channels", []),
+        "pillars_summary": {
+            "total_value_at_risk": (_state.get("pillars") or {}).get("total_value_at_risk", 0),
+            "revenue_leakage": (_state.get("pillars") or {}).get("revenue_leakage", {}).get("total_leakage", 0),
+        },
+        "smart_recs_count": len(_state.get("smart_recs") or []),
+        "insights_count": (_state.get("insights") or {}).get("generated_count", 0),
+    }
+    scenario_id = save_scenario(user_id=0, session_id="default", name=name, description=description,
+                                 parameters=params, results=results)
+    return _j({"id": scenario_id, "name": name, "status": "saved"})
+
+@app.get("/api/scenarios")
+def api_list_scenarios():
+    """List all saved scenarios."""
+    scenarios = list_scenarios()
+    return _j({"scenarios": scenarios, "count": len(scenarios)})
+
+@app.get("/api/scenarios/{scenario_id}")
+def api_get_scenario(scenario_id: int):
+    """Load a specific scenario."""
+    scenario = load_scenario(scenario_id)
+    if not scenario:
+        raise HTTPException(404, "Scenario not found")
+    return _j(scenario)
+
+@app.delete("/api/scenarios/{scenario_id}")
+def api_delete_scenario(scenario_id: int):
+    """Delete a scenario."""
+    from persistence import _get_conn
+    conn = _get_conn()
+    conn.execute("DELETE FROM scenarios WHERE id = ?", (scenario_id,))
+    conn.commit()
+    conn.close()
+    return _j({"deleted": scenario_id})
+
+@app.post("/api/scenarios/compare")
+def api_compare_scenarios(ids: str):
+    """Compare multiple scenarios. Pass ids as comma-separated: ?ids=1,2,3"""
+    id_list = [int(x.strip()) for x in ids.split(",") if x.strip()]
+    if len(id_list) < 2:
+        raise HTTPException(400, "Need at least 2 scenario IDs to compare")
+    scenarios = compare_scenarios(id_list)
+    if len(scenarios) < 2:
+        raise HTTPException(404, "One or more scenarios not found")
+    # Build comparison
+    comparison = {
+        "scenarios": scenarios,
+        "metrics_comparison": [],
+    }
+    metrics = ["current_revenue", "optimized_revenue", "uplift_pct", "current_roi", "optimized_roi"]
+    for metric in metrics:
+        row = {"metric": metric}
+        for s in scenarios:
+            row[f"scenario_{s['id']}"] = s.get("results", {}).get("summary", {}).get(metric, 0)
+        comparison["metrics_comparison"].append(row)
+    
+    # Channel-level comparison
+    channel_comparison = {}
+    for s in scenarios:
+        for ch in s.get("results", {}).get("channels", []):
+            ch_name = ch.get("channel", "")
+            if ch_name not in channel_comparison:
+                channel_comparison[ch_name] = {"channel": ch_name}
+            channel_comparison[ch_name][f"spend_s{s['id']}"] = ch.get("optimized_spend", 0)
+            channel_comparison[ch_name][f"rev_s{s['id']}"] = ch.get("optimized_revenue", 0)
+    comparison["channel_comparison"] = list(channel_comparison.values())
+    
+    return _j(comparison)
+
+
+# ═══════════════════════════════════════════════════════
+#  STATIC FILES & FRONTEND
+# ═══════════════════════════════════════════════════════
+
 if not os.path.isdir(frontend_dir):
     frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
 

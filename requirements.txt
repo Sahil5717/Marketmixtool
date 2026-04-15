@@ -1,33 +1,12 @@
-# ── Core ──
-numpy>=1.24
-pandas>=2.0
-scipy>=1.10
-fastapi>=0.100
-uvicorn>=0.22
-python-multipart>=0.0.6
-openpyxl>=3.1
-
-# ── Statistical Modeling ──
-statsmodels>=0.14              # ARIMA, seasonal decomposition, OLS, statistical tests
-prophet>=1.1                   # Time-series forecasting with seasonality + holidays
-scikit-learn>=1.3              # Cross-validation, preprocessing, model evaluation metrics
-pymc>=5.0                      # Bayesian MMM (MCMC sampling)
-arviz>=0.15                    # Bayesian model diagnostics & posterior visualization
-pymc-marketing>=0.7            # Dedicated MMM module (adstock, saturation, channel contribution)
-
-# ── Optimization ──
-# scipy.optimize.minimize already in scipy — handles SLSQP/COBYLA for constrained optimization
-# cvxpy is optional for convex formulations but scipy covers our use case
-
-# ── Attribution ──
-# Markov chain + Shapley implemented in pure numpy — no extra library needed
-# but shap can be used for model-level explanations if XGBoost models are added later
-# shap>=0.42
-
-# ── Data Quality ──
-great-expectations>=0.18       # Schema validation, data profiling, expectation suites
-jsonschema>=4.0                # API input validation
-
-# ── Export ──
-reportlab>=4.0                 # PDF generation for executive summaries
-python-pptx>=0.6               # PowerPoint export for business case decks
+numpy
+pandas
+scipy
+scikit-learn
+fastapi
+uvicorn
+python-multipart
+openpyxl
+statsmodels
+python-jose
+passlib
+bcrypt==4.0.1

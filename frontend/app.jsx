@@ -35,14 +35,24 @@ async function apiCall(endpoint, options = {}) {
    ═══════════════════════════════════════════════════════════════ */
 export default function App(){
 const[tab,setTab]=useState("home");const[D,setD]=useState(null);const[loading,setL]=useState(true);
-const[atM,setAtM]=useState("linear");const[selCh,setSelCh]=useState(null);
+const[atM,setAtM]=useState("markov");const[selCh,setSelCh]=useState(null);
 const[bM,setBM]=useState(1);const[obj,setObj]=useState("balanced");
 const[objWeights,setObjWeights]=useState({revenue:40,roi:30,leakage:15,cost:15});
-const[hillMode,setHillMode]=useState(false);
+const[hillMode,setHillMode]=useState("auto");
 const[fl,setFl]=useState({reg:"All",prod:"All",ct:"All",q:"All"});
 const[recs,setRecs]=useState([]);const[cons,setCons]=useState({});
 const[recFilter,setRecFilter]=useState("ALL");
 const[apiMode,setApiMode]=useState(false);
+const[smartRecs,setSmartRecs]=useState([]);
+const[insights,setInsights]=useState({});
+const[modelSel,setModelSel]=useState({attribution:"markov",response_curves:"auto",mmm:"auto",forecasting:"prophet",optimizer:"slsqp"});
+const[modelDiag,setModelDiag]=useState({});
+const[channelTrends,setChannelTrends]=useState({});
+const[extData,setExtData]=useState({});
+const[modelPanelOpen,setModelPanelOpen]=useState(false);
+const[modelRunning,setModelRunning]=useState(false);
+const[scenarios,setScenarios]=useState([]);
+const[showScenarios,setShowScenarios]=useState(false);
 
 useEffect(()=>{(async()=>{
   // Try backend API — single endpoint returns all data shaped for frontend
@@ -54,6 +64,12 @@ useEffect(()=>{(async()=>{
       setD({ rows: state.rows, opt: state.opt, pl: state.pl, attr: state.attr || {},
              curves: state.curves || {}, tS: state.tS, js: [] });
       setRecs(state.recs || []);
+      setSmartRecs(state.smartRecs || []);
+      setInsights(state.insights || {});
+      setModelSel(state.modelSelections || {attribution:"markov",response_curves:"auto",mmm:"auto",forecasting:"prophet",optimizer:"slsqp"});
+      setModelDiag(state.modelDiagnostics || {});
+      setChannelTrends(state.channelTrends || {});
+      setExtData(state.externalData || {});
       setL(false); return;
     }
   }
@@ -65,10 +81,23 @@ const reOpt=async()=>{if(!D)return;
   if(apiMode){
     const mt=hillMode===true?"hill":hillMode==="auto"?"auto":"power_law";
     const res=await apiCall(`/optimize?total_budget=${D.tS*bM}&objective=${obj}&model_type=${mt}&weight_revenue=${objWeights.revenue/100}&weight_roi=${objWeights.roi/100}&weight_leakage=${objWeights.leakage/100}&weight_cost=${objWeights.cost/100}`,{method:"POST"});
-    if(res){const st=await apiCall("/full-state");if(st){setD(d=>({...d,opt:st.opt,pl:st.pl,curves:st.curves||d.curves}))}}
+    if(res){const st=await apiCall("/full-state");if(st){setD(d=>({...d,opt:st.opt,pl:st.pl,curves:st.curves||d.curves}));setSmartRecs(st.smartRecs||[]);setInsights(st.insights||{});setModelDiag(st.modelDiagnostics||{})}}
   } else {
     const o=optim(D.curves,D.tS*bM,obj,cons);const p=pil(D.rows,o);setD(d=>({...d,opt:o,pl:p}));
   }};
+const changeModel=async(category,value)=>{if(!apiMode)return;
+  setModelRunning(true);
+  const newSel={...modelSel,[category]:value};setModelSel(newSel);
+  const qs=Object.entries(newSel).map(([k,v])=>`${k}=${v}`).join("&");
+  const res=await apiCall(`/model-selections?${qs}`,{method:"POST"});
+  if(res){const st=await apiCall("/full-state");if(st){
+    setD(d=>({...d,opt:st.opt,pl:st.pl,curves:st.curves||d.curves,attr:st.attr||d.attr}));
+    setRecs(st.recs||[]);setSmartRecs(st.smartRecs||[]);setInsights(st.insights||{});
+    setModelDiag(st.modelDiagnostics||{});setChannelTrends(st.channelTrends||{});
+    setExtData(st.externalData||{});
+  }}
+  setModelRunning(false);
+};
 const fd=useMemo(()=>D?D.rows.filter(r=>{if(fl.reg!=="All"&&r.reg!==fl.reg&&r.region!==fl.reg)return false;if(fl.prod!=="All"&&r.prod!==fl.prod&&r.product!==fl.prod)return false;if(fl.ct!=="All"&&r.ct!==fl.ct)return false;if(fl.q!=="All"){const mo=String(r.month||"").split("-")[1];if(mo){const q=Math.ceil(parseInt(mo)/3);if(`Q${q}`!==fl.q)return false}}return true}):[],[D,fl,apiMode]);
 const kp=useMemo(()=>{if(!fd.length)return{};const s=fd.reduce((a,x)=>a+x.spend,0),rv=fd.reduce((a,x)=>a+x.rev,0),cv=fd.reduce((a,x)=>a+x.conv,0),cl=fd.reduce((a,x)=>a+x.clicks,0);return{s,rv,roi:(rv-s)/s,roas:rv/s,cv,cac:s/cv,cl}},[fd]);
 const chD=useMemo(()=>{if(!fd.length)return[];const c={};fd.forEach(r=>{if(!c[r.ch])c[r.ch]={ch:r.ch,ct:r.ct,s:0,rv:0,im:0,cl:0,cv:0,col:CH[r.ch]?.color};const m=c[r.ch];m.s+=r.spend;m.rv+=r.rev;m.im+=r.imps;m.cl+=r.clicks;m.cv+=r.conv});return Object.values(c).map(m=>({...m,roi:(m.rv-m.s)/m.s,roas:m.rv/m.s,cac:m.s/Math.max(m.cv,1)})).sort((a,b)=>b.roi-a.roi)},[fd]);
@@ -76,6 +105,29 @@ const cpD=useMemo(()=>{if(!fd.length)return[];const c={};fd.forEach(r=>{const k=
 const mT=useMemo(()=>{if(!fd.length)return[];const m={};fd.forEach(r=>{if(!m[r.month])m[r.month]={month:r.ml,s:0,rv:0};m[r.month].s+=r.spend;m[r.month].rv+=r.rev});return Object.values(m)},[fd]);
 const oVo=useMemo(()=>{if(!fd.length)return{};const d={online:{s:0,rv:0,cv:0},offline:{s:0,rv:0,cv:0}};fd.forEach(r=>{d[r.ct].s+=r.spend;d[r.ct].rv+=r.rev;d[r.ct].cv+=r.conv});return Object.fromEntries(Object.entries(d).map(([k,v])=>[k,{...v,roi:(v.rv-v.s)/v.s,roas:v.rv/v.s,cac:v.s/Math.max(v.cv,1)}]))},[fd]);
 const exportExecSummary=async()=>{if(apiMode){window.open(`${API_BASE}/executive-summary`,"_blank")}else{alert("Connect to backend API for executive summary export")}};
+const uploadCSV=async(type)=>{if(!apiMode){alert("Connect to backend API for data uploads");return;}
+  const input=document.createElement("input");input.type="file";input.accept=".csv,.xlsx";
+  input.onchange=async(e)=>{const file=e.target.files[0];if(!file)return;
+    const form=new FormData();form.append("file",file);
+    try{const r=await fetch(`${API_BASE}/upload-${type}`,{method:"POST",body:form});
+      const d=await r.json();if(r.ok){alert(`${type} data loaded: ${d.status||"Success"}. ${d.recommendations||0} new recommendations generated.`);
+        const st=await apiCall("/full-state");if(st){setSmartRecs(st.smartRecs||[]);setExtData(st.externalData||{})}}
+      else{alert(`Error: ${d.detail||"Upload failed"}`)}
+    }catch(err){alert(`Upload failed: ${err.message}`)}};
+  input.click();
+};
+const saveScenario=async()=>{if(!apiMode)return;
+  const name=prompt("Name this scenario:");if(!name)return;
+  const desc=prompt("Description (optional):") || "";
+  const r=await apiCall(`/scenarios/save?name=${encodeURIComponent(name)}&description=${encodeURIComponent(desc)}`,{method:"POST"});
+  if(r){alert(`Scenario "${name}" saved (ID: ${r.id})`);loadScenarios()}
+};
+const loadScenarios=async()=>{if(!apiMode)return;
+  const r=await apiCall("/scenarios");
+  if(r)setScenarios(r.scenarios||[]);
+};
+const deleteScenario=async(id)=>{if(!confirm("Delete this scenario?"))return;
+  await apiCall(`/scenarios/${id}`,{method:"DELETE"});loadScenarios()};
 const exportCSV=()=>{if(!D)return;const h="Channel,Current,Optimized,Change%,ProjRev,ROI\n";const b=D.opt.channels.map(c=>`${FN(c.channel)},${c.cS},${c.oS},${c.chg.toFixed(1)}%,${c.oR},${c.oROI.toFixed(2)}`).join("\n");const bl=new Blob([h+b],{type:"text/csv"});const u=URL.createObjectURL(bl);const a=document.createElement("a");a.href=u;a.download="yield_plan.csv";a.click()};
 
 /* ═══ LOADING ═══ */
@@ -110,9 +162,35 @@ const KPI=({label,value,sub,color=V.teal,icon:Ic,big,onClick})=><Card onClick={o
 const Badge=({children,color=V.teal,filled})=><span style={{display:"inline-flex",padding:"3px 9px",borderRadius:6,background:filled?color:`${color}12`,color:filled?"#fff":color,fontSize:10,fontWeight:700,letterSpacing:.3,fontFamily:"'Outfit',sans-serif"}}>{children}</span>;
 const Btn=({children,primary,onClick,style:s})=><button onClick={onClick} style={{padding:"9px 18px",background:primary?`linear-gradient(135deg,${V.teal},#2A9D8F)`:"#fff",color:primary?"#fff":V.text,border:primary?"none":`1px solid ${V.cardBorder}`,borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"'Outfit',sans-serif",display:"inline-flex",alignItems:"center",gap:6,boxShadow:primary?"0 2px 8px rgba(27,107,95,.25)":V.shadow,transition:"all .15s",...s}}>{children}</button>;
 const SectionLabel=({children})=><div style={{fontSize:10,fontWeight:700,color:V.textMuted,textTransform:"uppercase",letterSpacing:1.2,marginBottom:12,fontFamily:"'Outfit',sans-serif"}}>{children}</div>;
+const InsightStrip=({items})=>items&&items.length>0?<div style={{marginBottom:20,padding:"14px 18px",background:`linear-gradient(135deg,${V.tealLight},#fff)`,borderRadius:12,border:`1px solid ${V.teal}15`,borderLeft:`4px solid ${V.teal}`}}>
+<div style={{fontSize:10,fontWeight:700,color:V.teal,textTransform:"uppercase",letterSpacing:1,marginBottom:8,display:"flex",alignItems:"center",gap:5}}><Zap size={11}/>Key Insights</div>
+{items.slice(0,3).map((it,i)=><div key={i} style={{fontSize:12,color:V.textMuted,lineHeight:1.7,marginBottom:i<items.length-1?6:0,paddingLeft:12,borderLeft:it.type==="negative"||it.type==="warning"?`2px solid ${V.red}`:it.type==="positive"?`2px solid ${V.green}`:`2px solid ${V.blue}`}}>
+<span style={{fontWeight:600,color:V.text}}>{it.headline||it.text}</span>{it.detail?<span> — {it.detail}</span>:null}
+</div>)}
+</div>:null;
+const SmartRecCard=({r,i})=><Card key={i} style={{borderLeft:`4px solid ${r.type==="REALLOCATE"?V.teal:r.type==="DECLINING"?V.red:r.type==="FIX_CX"?V.amber:r.type==="HIDDEN_VALUE"?V.violet:r.type==="DEFEND"?V.red:r.type==="OPPORTUNITY"?V.green:r.type==="PREPARE"?V.amber:r.type==="MITIGATE"?V.red:r.type==="CAPITALIZE"?V.green:r.type==="BENCHMARK"?V.blue:r.type==="COST_ALERT"?V.red:r.type==="DIFFERENTIATE"?V.violet:V.blue}`,animation:`fadeIn .3s ease ${i*.05}s both`}}>
+<div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+<div style={{display:"flex",gap:8,alignItems:"center"}}><Badge color={r.type==="REALLOCATE"?V.teal:r.type==="DECLINING"?V.red:r.type==="FIX_CX"?V.amber:r.type==="HIDDEN_VALUE"?V.violet:r.type==="DEFEND"?V.red:r.type==="OPPORTUNITY"?V.green:r.type==="PREPARE"?V.amber:r.type==="MITIGATE"?V.red:r.type==="CAPITALIZE"?V.green:r.type==="BENCHMARK"?V.blue:r.type==="COST_ALERT"?V.red:r.type==="DIFFERENTIATE"?V.violet:V.blue} filled>{r.type.replace(/_/g," ")}</Badge><span style={{fontSize:13,fontWeight:600,color:CH[r.channel]?.color||V.text}}>{FN(r.channel)}</span></div>
+<div style={{display:"flex",gap:6}}><Badge color={r.confidence==="High"?V.green:V.amber}>{r.confidence}</Badge>{r.impact>0&&<Badge color={V.green}>+{F(r.impact)}</Badge>}{r.impact<0&&<Badge color={V.red}>{F(r.impact)}</Badge>}</div>
+</div>
+<div style={{fontSize:13,color:V.textMuted,lineHeight:1.7,marginBottom:12}}>{r.narrative}</div>
+{r.phased_plan&&r.phased_plan.length>0&&<div style={{background:V.bg,borderRadius:8,padding:12,marginBottom:10,border:`1px solid ${V.cardBorder}`}}>
+<div style={{fontSize:10,fontWeight:700,color:V.textMuted,textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Phased Plan</div>
+{r.phased_plan.map((p,j)=><div key={j} style={{display:"flex",justifyContent:"space-between",fontSize:11,padding:"4px 0",borderBottom:j<r.phased_plan.length-1?`1px solid #F3F4F6`:"none",color:V.textMuted}}>
+<span><span style={{fontWeight:600,color:V.text}}>{p.month}</span> — {p.action}</span>
+<span style={{color:V.teal,fontWeight:600}}>{F(p.amount)}/mo</span>
+</div>)}
+</div>}
+{r.sources&&r.sources.length>0&&<div style={{display:"flex",gap:4,flexWrap:"wrap"}}><span style={{fontSize:10,color:V.textLight}}>Source:</span>{r.sources.map((s,j)=><span key={j} style={{fontSize:10,padding:"2px 8px",background:`${V.teal}10`,color:V.teal,borderRadius:4,fontWeight:500}}>{s}</span>)}</div>}
+{r.trends&&(r.trends.qoq_roi_change||r.trends.qoq_revenue)&&<div style={{display:"flex",gap:12,marginTop:8,fontSize:10,color:V.textLight}}>
+{r.trends.qoq_roi_change&&<span>QoQ ROI: <span style={{color:r.trends.qoq_roi_change>0?V.green:V.red,fontWeight:600}}>{r.trends.qoq_roi_change>0?"+":""}{r.trends.qoq_roi_change.toFixed(1)}%</span></span>}
+{r.trends.yoy_roi_change&&<span>YoY ROI: <span style={{color:r.trends.yoy_roi_change>0?V.green:V.red,fontWeight:600}}>{r.trends.yoy_roi_change>0?"+":""}{r.trends.yoy_roi_change.toFixed(1)}%</span></span>}
+{r.trends.qoq_revenue&&<span>QoQ Rev: <span style={{color:r.trends.qoq_revenue>0?V.green:V.red,fontWeight:600}}>{r.trends.qoq_revenue>0?"+":""}{r.trends.qoq_revenue.toFixed(1)}%</span></span>}
+</div>}
+</Card>;
 
 return(<div style={{minHeight:"100vh",background:V.bg,color:V.text,fontFamily:"'Outfit','Bricolage Grotesque',sans-serif",display:"flex"}}>
-<style>{`@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;500;600;700;800&family=Outfit:wght@300;400;500;600;700&display=swap');*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:6px}::-webkit-scrollbar-thumb{background:#D1D5DB;border-radius:3px}table{width:100%;border-collapse:collapse;font-size:12px;font-family:'Outfit',sans-serif}th{text-align:left;padding:10px 12px;color:${V.textMuted};font-weight:600;border-bottom:2px solid ${V.cardBorder};font-size:11px;text-transform:uppercase;letter-spacing:.6px}td{padding:10px 12px;border-bottom:1px solid #F3F4F6}tr:hover td{background:#FAFAF7}select{background:#fff;color:${V.text};border:1px solid ${V.cardBorder};padding:6px 10px;border-radius:8px;font-size:12px;font-family:inherit;outline:none}input[type=range]{accent-color:${V.teal};width:100%}h1,h2,h3{font-family:'Bricolage Grotesque',serif}@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}.fade-in{animation:fadeIn .4s ease both}`}</style>
+<style>{`@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;500;600;700;800&family=Outfit:wght@300;400;500;600;700&display=swap');*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:6px}::-webkit-scrollbar-thumb{background:#D1D5DB;border-radius:3px}table{width:100%;border-collapse:collapse;font-size:12px;font-family:'Outfit',sans-serif}th{text-align:left;padding:10px 12px;color:${V.textMuted};font-weight:600;border-bottom:2px solid ${V.cardBorder};font-size:11px;text-transform:uppercase;letter-spacing:.6px}td{padding:10px 12px;border-bottom:1px solid #F3F4F6}tr:hover td{background:#FAFAF7}select{background:#fff;color:${V.text};border:1px solid ${V.cardBorder};padding:6px 10px;border-radius:8px;font-size:12px;font-family:inherit;outline:none}input[type=range]{accent-color:${V.teal};width:100%}h1,h2,h3{font-family:'Bricolage Grotesque',serif}@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}.fade-in{animation:fadeIn .4s ease both}`}</style>
 
 {/* ═══ SIDEBAR ═══ */}
 <nav style={{width:230,minHeight:"100vh",background:"#fff",borderRight:`1px solid ${V.cardBorder}`,display:"flex",flexDirection:"column",flexShrink:0,position:"sticky",top:0,zIndex:10}}>
@@ -162,6 +240,7 @@ return(<div style={{minHeight:"100vh",background:V.bg,color:V.text,fontFamily:"'
 <p style={{fontSize:15,color:V.textMuted,lineHeight:1.6,maxWidth:620,fontFamily:"'Outfit',sans-serif"}}>{Object.keys(CH).length} channels · {cpD.length} campaigns · {fd.length.toLocaleString()} data points across online and offline</p>
 </div></div>
 
+<InsightStrip items={[...(insights.executive_headlines||[]),...(insights.risk_narratives||[]),...(insights.opportunity_narratives||[])].slice(0,3)}/>
 {/* KPI Strip */}
 <div style={{display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:12,marginBottom:28}}>
 <KPI label="Total Spend" value={F(kp.s)} color={V.blue} icon={DollarSign} onClick={()=>setTab("performance")}/>
@@ -184,6 +263,61 @@ return(<div style={{minHeight:"100vh",background:V.bg,color:V.text,fontFamily:"'
 <button onClick={()=>setTab(a.link)} style={{background:"none",border:"none",color:a.color,fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",gap:4}}>{a.cta} <ChevronRight size={13}/></button>
 </Card>)}
 </div>
+
+{/* Market Context (from external data) */}
+{(extData.competitive||extData.events||extData.trends||extData.categoryGrowth)&&<Card style={{marginBottom:20,borderLeft:`4px solid ${V.blue}`,background:`linear-gradient(135deg,${V.blueLight},#fff)`}}>
+<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+<SectionLabel>Market Intelligence</SectionLabel>
+<div style={{display:"flex",gap:6}}>
+{extData.competitive&&<Badge color={V.blue} filled>Competitive</Badge>}
+{extData.events&&<Badge color={V.amber} filled>Events</Badge>}
+{extData.trends&&<Badge color={V.green} filled>Trends</Badge>}
+</div>
+</div>
+<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12}}>
+{extData.competitive&&<div style={{textAlign:"center",padding:10,background:V.bg,borderRadius:8}}>
+<div style={{fontSize:20,fontWeight:800,color:V.blue}}>{extData.competitive.n_competitors||0}</div>
+<div style={{fontSize:10,color:V.textMuted}}>Competitors Tracked</div>
+</div>}
+{extData.competitive&&<div style={{textAlign:"center",padding:10,background:V.bg,borderRadius:8}}>
+<div style={{fontSize:20,fontWeight:800,color:extData.competitive.at_risk_channels>0?V.red:V.green}}>{extData.competitive.at_risk_channels||0}</div>
+<div style={{fontSize:10,color:V.textMuted}}>Channels at Risk</div>
+</div>}
+{extData.categoryGrowth&&<div style={{textAlign:"center",padding:10,background:V.bg,borderRadius:8}}>
+<div style={{fontSize:20,fontWeight:800,color:extData.categoryGrowth.trend==="up"?V.green:V.red}}>{extData.categoryGrowth.latest_value}%</div>
+<div style={{fontSize:10,color:V.textMuted}}>Category Growth</div>
+</div>}
+{extData.events&&<div style={{textAlign:"center",padding:10,background:V.bg,borderRadius:8}}>
+<div style={{fontSize:20,fontWeight:800,color:V.amber}}>{extData.events.upcoming_events||0}</div>
+<div style={{fontSize:10,color:V.textMuted}}>Upcoming Events</div>
+</div>}
+</div>
+{extData.eventCalendar&&extData.eventCalendar.length>0&&<div style={{marginTop:12}}>
+{extData.eventCalendar.slice(0,3).map((ev,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:`1px solid #F3F4F6`,fontSize:11}}>
+<span><Badge color={ev.direction==="positive"?V.green:ev.direction==="negative"?V.red:V.amber}>{ev.type.replace(/_/g," ")}</Badge> <span style={{marginLeft:6}}>{ev.name}</span></span>
+<span style={{color:V.textLight}}>{ev.date} · {ev.days_away}d away</span>
+</div>)}
+</div>}
+{extData.shareOfVoice&&Object.keys(extData.shareOfVoice).length>0&&<div style={{marginTop:12}}>
+<div style={{fontSize:10,fontWeight:600,color:V.textMuted,marginBottom:6}}>Share of Voice by Channel</div>
+{Object.entries(extData.shareOfVoice).slice(0,5).map(([ch,sov],i)=><div key={i} style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,fontSize:11}}>
+<span style={{width:80,color:CH[ch]?.color,fontWeight:500}}>{CH[ch]?.label?.slice(0,12)||ch}</span>
+<div style={{flex:1,height:6,background:"#F3F4F6",borderRadius:3}}><div style={{height:"100%",background:sov.share_of_voice>0.3?V.green:V.red,borderRadius:3,width:`${Math.min(100,sov.share_of_voice*100)}%`}}/></div>
+<span style={{width:35,textAlign:"right",fontWeight:600,color:sov.share_of_voice>0.3?V.green:V.red}}>{(sov.share_of_voice*100).toFixed(0)}%</span>
+</div>)}
+</div>}
+</Card>}
+
+{/* External Data Upload */}
+{apiMode&&!(extData.competitive||extData.events||extData.trends)&&<Card style={{marginBottom:20,background:V.bg,border:`1px dashed ${V.cardBorder}`}}>
+<div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+<div><div style={{fontSize:13,fontWeight:600,color:V.text,marginBottom:4}}>Add Market Intelligence</div>
+<div style={{fontSize:11,color:V.textMuted}}>Upload competitive data, market events, or industry trends to enhance recommendations</div></div>
+<div style={{display:"flex",gap:8}}>
+<Btn onClick={()=>uploadCSV("competitive")}><Layers size={12}/>Competitive</Btn>
+<Btn onClick={()=>uploadCSV("events")}><AlertCircle size={12}/>Events</Btn>
+<Btn onClick={()=>uploadCSV("trends")}><TrendingUp size={12}/>Trends</Btn>
+</div></div></Card>}
 
 {/* Charts */}
 <div style={{display:"grid",gridTemplateColumns:"3fr 2fr",gap:14,marginBottom:24}}>
@@ -225,6 +359,7 @@ return(<div style={{minHeight:"100vh",background:V.bg,color:V.text,fontFamily:"'
 {/* ═══ PERFORMANCE ═══ */}
 {tab==="performance"&&D&&<div className="fade-in">
 <div style={{marginBottom:24}}><h2 style={{fontSize:26,fontWeight:800,letterSpacing:-.5}}>Performance Analysis</h2><p style={{color:V.textMuted,fontSize:14,marginTop:6,fontFamily:"'Outfit'"}}>Where is performance strong, weak, or inconsistent across channels and campaigns?</p></div>
+<InsightStrip items={(insights.channel_stories||[]).slice(0,3).map(s=>({type:"insight",headline:s.channel?.replace("_"," "),detail:s.narratives?.[0]?.text||""}))}/>
 <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:12,marginBottom:24}}>
 <KPI label="Spend" value={F(kp.s)} color={V.blue}/><KPI label="Revenue" value={F(kp.rv)} color={V.green}/><KPI label="ROI" value={FX(kp.roi)} color={V.teal}/><KPI label="ROAS" value={FX(kp.roas)} color={V.violet}/><KPI label="CAC" value={F(kp.cac)} color={V.amber}/>
 </div>
@@ -232,6 +367,19 @@ return(<div style={{minHeight:"100vh",background:V.bg,color:V.text,fontFamily:"'
 <div style={{display:"flex",gap:4}}>{["linear","last_touch","position_based","markov"].map(m=><Btn key={m} primary={atM===m} onClick={()=>setAtM(m)} style={{fontSize:10,padding:"5px 12px"}}>{m.replace(/_/g," ")}</Btn>)}</div></div>
 <table><thead><tr><th>Channel</th><th>Type</th><th style={{textAlign:"right"}}>Last Touch</th><th style={{textAlign:"right"}}>Linear</th><th style={{textAlign:"right"}}>Position</th><th style={{textAlign:"right"}}>Markov</th></tr></thead>
 <tbody>{Object.keys(CH).map(ch=>{const lt=D.attr.last_touch?.[ch]||0,ln=D.attr.linear?.[ch]||0,pb=D.attr.position_based?.[ch]||0,mk=D.attr.markov?.[ch]||0;return<tr key={ch}><td><span style={{color:CH[ch]?.color,fontWeight:600}}>{FN(ch)}</span></td><td><Badge color={CH[ch]?.type==="online"?V.blue:V.violet}>{CH[ch]?.type}</Badge></td><td style={{textAlign:"right",fontWeight:atM==="last_touch"?700:400,color:atM==="last_touch"?V.teal:V.text}}>{F(lt)}</td><td style={{textAlign:"right",fontWeight:atM==="linear"?700:400,color:atM==="linear"?V.teal:V.text}}>{F(ln)}</td><td style={{textAlign:"right",fontWeight:atM==="position_based"?700:400,color:atM==="position_based"?V.teal:V.text}}>{F(pb)}</td><td style={{textAlign:"right",fontWeight:atM==="markov"?700:400,color:atM==="markov"?V.teal:V.text}}>{mk?F(mk):"—"}</td></tr>})}</tbody></table></Card>
+
+{extData.benchmarks&&Object.keys(extData.benchmarks).length>0&&<Card style={{marginBottom:16,borderLeft:`4px solid ${V.blue}`}}><SectionLabel>Industry Benchmarks</SectionLabel>
+<table><thead><tr><th>Channel</th><th style={{textAlign:"right"}}>Our CTR</th><th style={{textAlign:"right"}}>Benchmark CTR</th><th style={{textAlign:"right"}}>Our CVR</th><th style={{textAlign:"right"}}>Benchmark CVR</th><th style={{textAlign:"right"}}>Our CAC</th><th style={{textAlign:"right"}}>Benchmark CAC</th></tr></thead>
+<tbody>{Object.entries(extData.benchmarks).map(([ch,bm])=>{const m=chD.find(c=>c.ch===ch)||{};return<tr key={ch}>
+<td style={{color:CH[ch]?.color,fontWeight:600}}>{FN(ch)}</td>
+<td style={{textAlign:"right"}}>{((m.cl||0)/Math.max(m.im||1,1)*100).toFixed(2)}%</td>
+<td style={{textAlign:"right",color:V.textLight}}>{bm.ctr?(bm.ctr*100).toFixed(2)+"%":"—"}</td>
+<td style={{textAlign:"right"}}>{((m.cv||0)/Math.max(m.cl||1,1)*100).toFixed(2)}%</td>
+<td style={{textAlign:"right",color:V.textLight}}>{bm.cvr?(bm.cvr*100).toFixed(2)+"%":"—"}</td>
+<td style={{textAlign:"right"}}>{F(m.cac)}</td>
+<td style={{textAlign:"right",color:V.textLight}}>{bm.cac?F(bm.cac):"—"}</td>
+</tr>})}</tbody></table></Card>}
+
 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:16}}>
 <Card><SectionLabel>ROI by Channel</SectionLabel><ResponsiveContainer width="100%" height={280}><BarChart data={chD} layout="vertical"><CartesianGrid strokeDasharray="3 3" stroke="#E8E6E1"/><XAxis type="number" tick={{fill:V.textMuted,fontSize:11}} tickFormatter={v=>FX(v)}/><YAxis dataKey="ch" type="category" tick={{fill:V.textMuted,fontSize:10}} width={100} tickFormatter={v=>FN(v)}/><Tooltip contentStyle={tt} formatter={v=>FX(v)}/><Bar dataKey="roi" radius={[0,6,6,0]} name="ROI">{chD.map((c,i)=><Cell key={i} fill={c.col}/>)}</Bar></BarChart></ResponsiveContainer></Card>
 <Card><SectionLabel>Channel × Campaign Matrix</SectionLabel><div style={{overflowX:"auto",maxHeight:280}}><table><thead><tr><th>Campaign</th><th style={{textAlign:"right"}}>Spend</th><th style={{textAlign:"right"}}>Revenue</th><th style={{textAlign:"right"}}>ROI</th><th style={{textAlign:"right"}}>CAC</th></tr></thead><tbody>{cpD.slice(0,12).map(c=><tr key={`${c.ch}-${c.camp}`} style={{cursor:"pointer"}} onClick={()=>{setSelCh(c.ch);setTab("deepdive")}}><td><span style={{fontWeight:500}}>{c.camp}</span><span style={{fontSize:10,color:c.col,marginLeft:6}}>{FN(c.ch)}</span></td><td style={{textAlign:"right"}}>{F(c.s)}</td><td style={{textAlign:"right"}}>{F(c.rv)}</td><td style={{textAlign:"right",color:c.roi>3?V.green:c.roi>1.5?V.teal:V.red,fontWeight:700}}>{FX(c.roi)}</td><td style={{textAlign:"right"}}>{F(c.cac)}</td></tr>)}</tbody></table></div></Card>
@@ -245,6 +393,18 @@ return(<div style={{minHeight:"100vh",background:V.bg,color:V.text,fontFamily:"'
 return<><div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}}>
 <KPI label="Spend" value={F(tS2)} color={V.blue}/><KPI label="Revenue" value={F(tR2)} color={V.green}/><KPI label="ROI" value={FX((tR2-tS2)/tS2)} color={V.teal}/><KPI label="Conversions" value={cr.reduce((a,r)=>a+r.conv,0).toLocaleString()} color={V.blue}/>
 </div>
+{channelTrends[selCh]&&<InsightStrip items={[
+  channelTrends[selCh]?.qoq?.revenue?.direction!=="flat"?{type:channelTrends[selCh].qoq.revenue.direction==="up"?"positive":"warning",headline:`QoQ Revenue: ${channelTrends[selCh].qoq.revenue.change_pct>0?"+":""}${channelTrends[selCh].qoq.revenue.change_pct}%`,detail:`${channelTrends[selCh].qoq.revenue.direction==="up"?"Improving":"Declining"} quarter-over-quarter`}:null,
+  channelTrends[selCh]?.yoy?.revenue?{type:channelTrends[selCh].yoy.revenue.direction==="up"?"positive":"warning",headline:`YoY Revenue: ${channelTrends[selCh].yoy.revenue.change_pct>0?"+":""}${channelTrends[selCh].yoy.revenue.change_pct}%`,detail:`Year-over-year trend`}:null,
+  channelTrends[selCh]?.trailing?.roi?{type:channelTrends[selCh].trailing.roi.direction==="up"?"positive":"negative",headline:`Trailing ROI: ${channelTrends[selCh].trailing.roi.direction}`,detail:`Last 3 months vs prior 3 months: ${channelTrends[selCh].trailing.roi.change_pct>0?"+":""}${channelTrends[selCh].trailing.roi.change_pct}%`}:null,
+].filter(Boolean)}/>}
+{extData.shareOfVoice?.[selCh]&&<Card style={{marginBottom:14,borderLeft:`4px solid ${V.blue}`}}>
+<SectionLabel>Competitive Positioning</SectionLabel>
+<div style={{display:"flex",gap:20,fontSize:12}}>
+<div><span style={{color:V.textMuted}}>Our Spend:</span> <span style={{fontWeight:700}}>{F(extData.shareOfVoice[selCh].our_spend)}</span></div>
+<div><span style={{color:V.textMuted}}>Competitor Spend:</span> <span style={{fontWeight:700}}>{F(extData.shareOfVoice[selCh].competitor_spend)}</span></div>
+<div><span style={{color:V.textMuted}}>Share of Voice:</span> <span style={{fontWeight:700,color:extData.shareOfVoice[selCh].share_of_voice>0.3?V.green:V.red}}>{(extData.shareOfVoice[selCh].share_of_voice*100).toFixed(0)}%</span></div>
+</div></Card>}
 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:16}}>
 <Card><SectionLabel>Revenue & Spend Trend</SectionLabel><ResponsiveContainer width="100%" height={220}><ComposedChart data={Object.values(mo)}><CartesianGrid strokeDasharray="3 3" stroke="#E8E6E1"/><XAxis dataKey="month" tick={{fill:V.textMuted,fontSize:11}}/><YAxis tick={{fill:V.textMuted,fontSize:11}} tickFormatter={v=>F(v)}/><Tooltip contentStyle={tt} formatter={v=>F(v)}/><Legend wrapperStyle={{fontSize:11}}/><Bar dataKey="s" fill={`${V.blue}15`} stroke={`${V.blue}30`} radius={[3,3,0,0]} name="Spend"/><Line dataKey="rv" stroke={V.teal} strokeWidth={2.5} dot={{r:3,fill:V.teal}} name="Revenue"/></ComposedChart></ResponsiveContainer></Card>
 {cv&&<Card><SectionLabel>Response Curve (Diminishing Returns)</SectionLabel><div style={{fontSize:11,color:V.textMuted,marginBottom:8}}>Headroom: <span style={{color:cv.hd>30?V.green:V.amber,fontWeight:700}}>{cv.hd.toFixed(0)}%</span> · Marginal ROI: <span style={{color:V.teal,fontWeight:700}}>{FX(cv.mROI)}</span></div><ResponsiveContainer width="100%" height={190}><ComposedChart data={cv.cp}><CartesianGrid strokeDasharray="3 3" stroke="#E8E6E1"/><XAxis dataKey="spend" tick={{fill:V.textMuted,fontSize:10}} tickFormatter={v=>F(v)}/><YAxis tick={{fill:V.textMuted,fontSize:10}} tickFormatter={v=>F(v)}/><Tooltip contentStyle={tt} formatter={v=>F(v)}/><Line dataKey="revenue" stroke={V.teal} strokeWidth={2.5} dot={false} name="Predicted Revenue"/><ReferenceLine x={Math.round(cv.avgSpend)} stroke={V.amber} strokeDasharray="5 5" label={{value:"Current",fill:V.amber,fontSize:10}}/></ComposedChart></ResponsiveContainer></Card>}
@@ -262,6 +422,7 @@ return<><div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,m
 {/* ═══ LEAKAGE ═══ */}
 {tab==="pillars"&&D&&<div className="fade-in">
 <div style={{marginBottom:24}}><h2 style={{fontSize:26,fontWeight:800,letterSpacing:-.5}}>Value Leakage Analysis</h2><p style={{color:V.textMuted,fontSize:14,marginTop:6}}>How much value are we losing from wrong allocation and poor execution?</p></div>
+<InsightStrip items={(insights.risk_narratives||[]).map(r=>({type:"warning",headline:r.headline,detail:r.detail}))}/>
 <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:24}}>
 <KPI label="Total Value at Risk" value={F(D.pl.totalRisk)} color={V.red} icon={AlertTriangle} big/><KPI label="Revenue Leakage" value={F(D.pl.leak.total)} color={V.red} sub={{t:`${D.pl.leak.pct.toFixed(1)}% of revenue`,c:V.red}}/><KPI label="CX Suppression" value={F(D.pl.exp.total)} color={V.amber} sub={{t:`${D.pl.exp.items.length} campaigns`,c:V.amber}}/><KPI label="Avoidable Cost" value={F(D.pl.cost.total)} color={V.violet}/>
 </div>
@@ -274,7 +435,12 @@ return<><div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,m
 
 {/* ═══ RECOMMENDATIONS ═══ */}
 {tab==="recommendations"&&D&&<div className="fade-in">
-<div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginBottom:24}}><div><h2 style={{fontSize:26,fontWeight:800,letterSpacing:-.5}}>Recommendations</h2><p style={{color:V.textMuted,fontSize:14,marginTop:6}}>Evidence-backed actions to improve performance</p></div><div style={{display:"flex",gap:5}}>{["ALL","SCALE","REDUCE","FIX","MAINTAIN","RETARGET"].map(t=><Btn key={t} primary={recFilter===t} onClick={()=>setRecFilter(t)} style={{fontSize:10,padding:"6px 12px"}}>{t}</Btn>)}</div></div>
+<div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginBottom:24}}><div><h2 style={{fontSize:26,fontWeight:800,letterSpacing:-.5}}>Recommendations & Insights</h2><p style={{color:V.textMuted,fontSize:14,marginTop:6}}>AI-backed actions with historical context, QoQ/YoY trends, and model provenance</p></div><div style={{display:"flex",gap:5}}>{["ALL","REALLOCATE","DECLINING","FIX_CX","HIDDEN_VALUE","SCALE","REDUCE","FIX","MAINTAIN","RETARGET"].map(t=><Btn key={t} primary={recFilter===t} onClick={()=>setRecFilter(t)} style={{fontSize:10,padding:"6px 12px"}}>{t}</Btn>)}</div></div>
+{smartRecs.length>0&&<><div style={{fontSize:10,fontWeight:700,color:V.teal,textTransform:"uppercase",letterSpacing:1.2,marginBottom:12}}>Strategic Recommendations (with context)</div>
+<div style={{display:"grid",gridTemplateColumns:"1fr",gap:14,marginBottom:28}}>
+{smartRecs.filter(r=>recFilter==="ALL"||r.type===recFilter).slice(0,8).map((r,i)=><SmartRecCard key={i} r={r} i={i}/>)}
+</div></>}
+<div style={{fontSize:10,fontWeight:700,color:V.textMuted,textTransform:"uppercase",letterSpacing:1.2,marginBottom:12}}>Channel & Campaign Actions</div>
 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
 {recs.filter(r=>recFilter==="ALL"||r.type===recFilter).slice(0,12).map((r,i)=><Card key={i} style={{borderLeft:`4px solid ${r.type==="SCALE"?V.green:r.type==="REDUCE"?V.red:r.type==="FIX"?V.amber:V.blue}`,animation:`fadeIn .3s ease ${i*.05}s both`}}>
 <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
@@ -298,20 +464,66 @@ return<><div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,m
 <div style={{marginBottom:16}}><label style={{fontSize:11,color:V.textMuted,fontWeight:600,display:"block",marginBottom:8}}>Objective</label>{[["balanced","Balanced"],["maximize_revenue","Max Revenue"],["maximize_roi","Max ROI"],["minimize_cac","Min CAC"]].map(([k,l])=><label key={k} style={{display:"flex",alignItems:"center",gap:8,fontSize:12,marginBottom:6,cursor:"pointer",color:obj===k?V.teal:V.textMuted,fontWeight:obj===k?600:400}}><input type="radio" checked={obj===k} onChange={()=>setObj(k)} style={{accentColor:V.teal}}/>{l}</label>)}</div>
 {obj==="balanced"&&<div style={{marginBottom:16}}><label style={{fontSize:11,color:V.textMuted,fontWeight:600,display:"block",marginBottom:6}}>Objective Weights</label>
 {Object.entries(objWeights).map(([k,v])=><div key={k} style={{display:"flex",alignItems:"center",gap:6,fontSize:11,marginBottom:4}}><span style={{color:V.textMuted,width:55,textTransform:"capitalize"}}>{k}</span><input type="range" min={0} max={100} value={v} onChange={e=>setObjWeights(p=>({...p,[k]:parseInt(e.target.value)}))} style={{flex:1,height:14,accentColor:V.teal}}/><span style={{color:V.teal,width:30,fontWeight:700,textAlign:"right"}}>{v}%</span></div>)}</div>}
-<div style={{marginBottom:16}}><label style={{fontSize:11,color:V.textMuted,fontWeight:600,display:"block",marginBottom:6}}>Response Curve Model</label>
-<div style={{display:"flex",gap:4,flexWrap:"wrap"}}>{[["power_law","Power-Law"],["hill","Hill"],["auto","Auto (best fit)"]].map(([k,l])=><Btn key={k} primary={(!hillMode&&k==="power_law")||(hillMode&&k==="hill")||(k==="auto"&&hillMode==="auto")} onClick={()=>setHillMode(k==="hill"?true:k==="auto"?"auto":false)} style={{fontSize:10,padding:"4px 10px"}}>{l}</Btn>)}</div>
-<div style={{fontSize:10,color:V.textLight,marginTop:6,lineHeight:1.6,background:V.bg,padding:8,borderRadius:6}}>
-{hillMode===true&&"Hill model: captures saturation ceiling. Better for mature channels where more spend hits diminishing returns. Use when you see flattening in the response curve."}
-{hillMode===false&&"Power-law model: assumes log-linear response. Better for channels still in growth phase with headroom. Use as default unless curves show clear saturation."}
-{hillMode==="auto"&&"Auto-select: uses the model with better R² fit per channel. Hill for saturated channels, power-law for growth channels. Recommended for mixed portfolios."}
-</div></div>
+{/* Model Control Panel */}
+<div style={{marginBottom:16,border:`1px solid ${modelPanelOpen?V.teal+"30":V.cardBorder}`,borderRadius:10,overflow:"hidden",transition:"all .2s"}}>
+<button onClick={()=>setModelPanelOpen(!modelPanelOpen)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",width:"100%",padding:"10px 12px",background:modelPanelOpen?V.tealLight:"transparent",border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:12,fontWeight:600,color:modelPanelOpen?V.teal:V.textMuted}}>
+<span>Models & Methodology</span>
+<ChevronDown size={14} style={{transform:modelPanelOpen?"rotate(180deg)":"none",transition:"transform .2s"}}/>
+</button>
+{modelPanelOpen&&<div style={{padding:"10px 12px",borderTop:`1px solid ${V.cardBorder}`,fontSize:11}}>
+{modelRunning&&<div style={{background:V.tealLight,color:V.teal,padding:"6px 10px",borderRadius:6,marginBottom:10,fontSize:11,display:"flex",alignItems:"center",gap:6}}><RefreshCw size={12} style={{animation:"spin 1s linear infinite"}}/>Re-running engines with new models...</div>}
+
+<div style={{marginBottom:14}}><div style={{fontWeight:700,color:V.text,marginBottom:6}}>Attribution</div>
+{[["last_touch","Last Touch"],["linear","Linear"],["position_based","Position-Based"],["markov","Markov Chain"],["shapley","Shapley Values"]].map(([k,l])=><label key={k} style={{display:"flex",alignItems:"center",gap:6,fontSize:11,marginBottom:4,cursor:"pointer",color:modelSel.attribution===k?V.teal:V.textMuted,fontWeight:modelSel.attribution===k?600:400}}><input type="radio" name="attr" checked={modelSel.attribution===k} onChange={()=>changeModel("attribution",k)} style={{accentColor:V.teal}}/>{l}</label>)}
+{modelDiag.attribution&&<div style={{fontSize:10,color:V.textLight,marginTop:4,padding:"4px 8px",background:V.bg,borderRadius:4}}>Active: {modelSel.attribution.replace(/_/g," ")} {modelDiag.attribution?.converged!==false?"✅":"⚠️"}</div>}
+</div>
+
+<div style={{marginBottom:14}}><div style={{fontWeight:700,color:V.text,marginBottom:6}}>Response Curves</div>
+{[["power_law","Power-Law (y=ax^b)"],["hill","Hill Saturation (y=ax^b/(K^b+x^b))"],["auto","Auto (best R² per channel)"]].map(([k,l])=><label key={k} style={{display:"flex",alignItems:"center",gap:6,fontSize:11,marginBottom:4,cursor:"pointer",color:modelSel.response_curves===k?V.teal:V.textMuted,fontWeight:modelSel.response_curves===k?600:400}}><input type="radio" name="rc" checked={modelSel.response_curves===k} onChange={()=>{changeModel("response_curves",k);setHillMode(k==="hill"?true:k==="auto"?"auto":false)}} style={{accentColor:V.teal}}/>{l}</label>)}
+{modelDiag.response_curves&&<div style={{fontSize:10,color:V.textLight,marginTop:4,padding:"4px 8px",background:V.bg,borderRadius:4}}>Active: {modelSel.response_curves} · {modelDiag.response_curves?.channels||0} channels · Avg R²: {modelDiag.response_curves?.avg_r2||0}</div>}
+</div>
+
+<div style={{marginBottom:14}}><div style={{fontWeight:700,color:V.text,marginBottom:6}}>Marketing Mix Model (MMM)</div>
+{[["auto","Auto (Bayesian → MLE → OLS)"],["bayesian","Bayesian (PyMC NUTS)"],["mle","MLE (scipy L-BFGS-B)"],["ols","OLS + Bootstrap"]].map(([k,l])=><label key={k} style={{display:"flex",alignItems:"center",gap:6,fontSize:11,marginBottom:4,cursor:"pointer",color:modelSel.mmm===k?V.teal:V.textMuted,fontWeight:modelSel.mmm===k?600:400}}><input type="radio" name="mmm" checked={modelSel.mmm===k} onChange={()=>changeModel("mmm",k)} style={{accentColor:V.teal}}/>{l}</label>)}
+{modelDiag.mmm&&<div style={{fontSize:10,color:V.textLight,marginTop:4,padding:"4px 8px",background:V.bg,borderRadius:4}}>Active: {modelDiag.mmm?.method||"not run"} · R²: {modelDiag.mmm?.r2||"N/A"}</div>}
+</div>
+
+<div style={{marginBottom:14}}><div style={{fontWeight:700,color:V.text,marginBottom:6}}>Forecasting</div>
+{[["prophet","Prophet (seasonality + holidays)"],["arima","ARIMA (classical time-series)"],["linear","Linear Fallback"]].map(([k,l])=><label key={k} style={{display:"flex",alignItems:"center",gap:6,fontSize:11,marginBottom:4,cursor:"pointer",color:modelSel.forecasting===k?V.teal:V.textMuted,fontWeight:modelSel.forecasting===k?600:400}}><input type="radio" name="fc" checked={modelSel.forecasting===k} onChange={()=>changeModel("forecasting",k)} style={{accentColor:V.teal}}/>{l}</label>)}
+</div>
+
+<div><div style={{fontWeight:700,color:V.text,marginBottom:6}}>Optimizer</div>
+{[["slsqp","SLSQP Constrained Optimization"],["pareto","Multi-Objective Pareto"]].map(([k,l])=><label key={k} style={{display:"flex",alignItems:"center",gap:6,fontSize:11,marginBottom:4,cursor:"pointer",color:modelSel.optimizer===k?V.teal:V.textMuted,fontWeight:modelSel.optimizer===k?600:400}}><input type="radio" name="opt" checked={modelSel.optimizer===k} onChange={()=>changeModel("optimizer",k)} style={{accentColor:V.teal}}/>{l}</label>)}
+{modelDiag.optimizer&&<div style={{fontSize:10,color:V.textLight,marginTop:4,padding:"4px 8px",background:V.bg,borderRadius:4}}>Converged: {modelDiag.optimizer?.converged?"✅":"⚠️ (using current allocation)"}</div>}
+</div>
+</div>}
+</div>
 <div style={{marginBottom:16}}><label style={{fontSize:11,color:V.textMuted,fontWeight:600,display:"block",marginBottom:8}}>Channel Locks</label>{Object.keys(CH).map(ch=><div key={ch} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0",fontSize:11}}><span style={{color:V.textMuted}}>{CH[ch].label.slice(0,14)}</span><button onClick={()=>setCons(c=>({...c,[ch]:{...c[ch],locked:!c[ch]?.locked,lockedAmount:D.opt.channels.find(x=>x.channel===ch)?.cS}}))} style={{background:"none",border:"none",cursor:"pointer",color:cons[ch]?.locked?V.teal:V.textLight}}>{cons[ch]?.locked?<Lock size={13}/>:<Unlock size={13}/>}</button></div>)}</div>
 <Btn primary onClick={reOpt} style={{width:"100%",justifyContent:"center"}}><Play size={14}/>Run Optimizer</Btn>
-</Card></div>
+<div style={{display:"flex",gap:6,marginTop:10}}>
+<Btn onClick={saveScenario} style={{flex:1,justifyContent:"center",fontSize:10}}><Download size={12}/>Save Scenario</Btn>
+<Btn onClick={()=>{loadScenarios();setShowScenarios(!showScenarios)}} style={{flex:1,justifyContent:"center",fontSize:10}}><Layers size={12}/>Compare</Btn>
+</div>
+</Card>
+{showScenarios&&scenarios.length>0&&<Card style={{marginBottom:14}}>
+<SectionLabel>Saved Scenarios</SectionLabel>
+{scenarios.map(s=><div key={s.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:`1px solid #F3F4F6`,fontSize:11}}>
+<div><div style={{fontWeight:600,color:V.text}}>{s.name}</div>
+<div style={{fontSize:10,color:V.textLight}}>{s.description||"No description"}</div>
+{s.parameters&&<div style={{fontSize:10,color:V.textMuted,marginTop:2}}>Budget: {F(s.parameters.total_budget)} · Model: {s.parameters.model_type||"auto"}</div>}
+</div>
+<button onClick={()=>deleteScenario(s.id)} style={{background:"none",border:"none",color:V.textLight,cursor:"pointer",fontSize:10}}>✕</button>
+</div>)}
+</Card>}
+</div>
 <div>
 <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:16}}>
 <KPI label="Current Revenue" value={F(D.opt.summary.cRev)} color={V.textLight}/><KPI label="Optimized Revenue" value={F(D.opt.summary.oRev)} color={V.green}/><KPI label="Uplift" value={FP(D.opt.summary.uplift)} color={D.opt.summary.uplift>0?V.green:V.red}/><KPI label="Optimized ROI" value={FX(D.opt.summary.oROI)} color={V.teal}/>
 </div>
+<InsightStrip items={[
+...(D.opt.summary.uplift>5?[{type:"positive",headline:"Reallocation opportunity",detail:`Optimized mix improves revenue by ${FP(D.opt.summary.uplift)} without increasing total spend. ${D.opt.channels.filter(c=>c.chg>10).length} channels increase, ${D.opt.channels.filter(c=>c.chg<-10).length} decrease.`}]:[]),
+...(modelDiag.optimizer?.converged===false?[{type:"warning",headline:"Optimizer did not converge",detail:"SLSQP hit a singular matrix. Showing current allocation as baseline. Try changing budget or unlocking channels."}]:[]),
+].slice(0,2)}/>
 <Card style={{marginBottom:14}}><SectionLabel>Current vs Optimized Allocation</SectionLabel><ResponsiveContainer width="100%" height={260}><BarChart data={D.opt.channels.map(c=>({ch:CH[c.channel]?.label?.slice(0,12),current:c.cS,optimized:c.oS}))}><CartesianGrid strokeDasharray="3 3" stroke="#E8E6E1"/><XAxis dataKey="ch" tick={{fill:V.textMuted,fontSize:10}}/><YAxis tick={{fill:V.textMuted,fontSize:11}} tickFormatter={v=>F(v)}/><Tooltip contentStyle={tt} formatter={v=>F(v)}/><Legend wrapperStyle={{fontSize:11}}/><Bar dataKey="current" fill="#E8E6E1" name="Current" radius={[4,4,0,0]}/><Bar dataKey="optimized" fill={V.teal} name="Optimized" radius={[4,4,0,0]}/></BarChart></ResponsiveContainer></Card>
 <Card><SectionLabel>Allocation Detail</SectionLabel><table><thead><tr><th>Channel</th><th style={{textAlign:"right"}}>Current</th><th style={{textAlign:"right"}}>Optimized</th><th style={{textAlign:"right"}}>Change</th><th style={{textAlign:"right"}}>Proj Revenue</th><th style={{textAlign:"right"}}>Marginal ROI</th></tr></thead><tbody>{D.opt.channels.sort((a,b)=>b.chg-a.chg).map(c=><tr key={c.channel} style={{opacity:c.locked?0.5:1}}><td><span style={{color:CH[c.channel]?.color,fontWeight:600}}>{FN(c.channel)}</span>{c.locked&&<Lock size={10} color={V.teal} style={{marginLeft:4}}/>}</td><td style={{textAlign:"right"}}>{F(c.cS)}</td><td style={{textAlign:"right",fontWeight:600}}>{F(c.oS)}</td><td style={{textAlign:"right",color:c.chg>0?V.green:V.red,fontWeight:700}}>{FP(c.chg)}</td><td style={{textAlign:"right"}}>{F(c.oR)}</td><td style={{textAlign:"right",color:V.teal,fontWeight:600}}>{FX(c.mROI)}</td></tr>)}</tbody></table></Card>
 
@@ -358,6 +570,25 @@ return<><div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,m
 <div><div style={{fontSize:14,fontWeight:700,color:V.teal,marginBottom:4,fontFamily:"'Bricolage Grotesque',serif"}}>Export & Action Pack</div><div style={{fontSize:12,color:V.textMuted}}>Generate allocation plan, executive summary, or recommendation document</div></div>
 <div style={{display:"flex",gap:10}}><Btn onClick={exportCSV}><Download size={13}/>CSV Plan</Btn><Btn primary onClick={exportExecSummary}><FileText size={13}/>Executive Summary</Btn></div>
 </div></Card>
+
+{/* External Data Upload — Business Case */}
+{apiMode&&<Card style={{marginTop:14,background:V.bg,border:`1px dashed ${V.cardBorder}`}}>
+<div style={{fontSize:12,fontWeight:600,color:V.text,marginBottom:8}}>Enrich with Market Data</div>
+<div style={{fontSize:11,color:V.textMuted,marginBottom:12}}>Upload external data to add competitive context, market events, and industry benchmarks to your business case</div>
+<div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+<Btn onClick={()=>uploadCSV("competitive")}><Layers size={12}/>Competitive Intel{extData.competitive?" ✅":""}</Btn>
+<Btn onClick={()=>uploadCSV("events")}><AlertCircle size={12}/>Market Events{extData.events?" ✅":""}</Btn>
+<Btn onClick={()=>uploadCSV("trends")}><TrendingUp size={12}/>Trends & Benchmarks{extData.trends?" ✅":""}</Btn>
+</div>
+{extData.costAdjustments&&Object.keys(extData.costAdjustments).length>0&&<div style={{marginTop:12,padding:12,background:"#fff",borderRadius:8,border:`1px solid ${V.cardBorder}`}}>
+<div style={{fontSize:10,fontWeight:700,color:V.textMuted,textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Cost Trend Alerts</div>
+{Object.entries(extData.costAdjustments).map(([ch,adj],i)=><div key={i} style={{display:"flex",justifyContent:"space-between",fontSize:11,padding:"4px 0",borderBottom:`1px solid #F3F4F6`}}>
+<span style={{color:CH[ch]?.color,fontWeight:500}}>{FN(ch)}</span>
+<span style={{color:adj.yoy_change_pct>10?V.red:adj.yoy_change_pct<-5?V.green:V.textMuted,fontWeight:600}}>{adj.yoy_change_pct>0?"+":""}{adj.yoy_change_pct}% YoY</span>
+</div>)}
+</div>}
+</Card>}
+
 <div style={{marginTop:16,padding:16,background:V.bg,borderRadius:12,border:`1px solid ${V.cardBorder}`}}>
 <div style={{fontSize:10,fontWeight:700,color:V.textLight,textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Methodology & Confidence</div>
 <div style={{fontSize:11,color:V.textLight,lineHeight:1.8}}>

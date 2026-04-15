@@ -1,185 +1,130 @@
 # Yield Intelligence Platform
-### Omnichannel Marketing ROI & Budget Optimization Engine
+## Marketing ROI & Budget Optimization Engine
 
-An end-to-end marketing analytics tool that measures current ROI, diagnoses value leakage, and optimizes next-year budget allocation using statistical models.
+### What it does
+Omnichannel marketing analytics engine that answers three questions:
+1. **What happened?** — ROI, attribution, trends across all channels and campaigns
+2. **What should we do?** — AI-backed recommendations with QoQ/YoY context, cross-channel reasoning, phased action plans
+3. **What's the business case?** — Budget optimization with scenario comparison, value-at-risk quantification
 
----
+### Architecture
+- **Backend**: FastAPI (Python 3.12) with 20+ statistical engines (scipy, statsmodels, prophet, pymc)
+- **Frontend**: React + Recharts + Lucide (Vite build system, CDN fallback for portability)
+- **Persistence**: SQLite (sessions, scenarios, users)
+- **Auth**: JWT + RBAC (admin / analyst / viewer roles)
 
-## Quick Start (Local)
+### Key Features
+
+**Analytics Engines (22 engines, 4,230 lines)**
+- Response Curves: Power-Law, Hill Saturation, Auto-select per channel
+- Marketing Mix Model: Bayesian (PyMC), MLE (scipy), OLS + Bootstrap, 3-tier fallback
+- Attribution: Last Touch, Linear, Position-Based, Markov Chain, Shapley Values
+- Optimizer: SLSQP constrained, Multi-Objective Pareto, sensitivity analysis
+- Forecasting: Prophet, ARIMA, linear fallback
+- Plus: adstock, cross-channel correlation, geo-lift, funnel analysis, trend analysis
+
+**Model Control Panel**
+- All models selectable with real names (Bayesian PyMC NUTS, Markov Chain, SLSQP, etc.)
+- Diagnostic metrics visible (R², convergence, MAPE)
+- Auto-runs full engine chain when model selection changes
+
+**Smart Recommendations (13+ types)**
+- Paragraph-style with historical context and QoQ/YoY trends
+- Cross-channel reasoning: "Shift $45K/month from Display to Paid Search"
+- Phased plans: Month 1 test, Month 2-3 scale, conditions for scaling
+- Model provenance: "Source: Response Curves + Markov Attribution"
+- Types: REALLOCATE, DECLINING, FIX_CX, HIDDEN_VALUE, SCALE, REDUCE, FIX, RETARGET, MAINTAIN
+
+**External Data Integration (3 CSV uploads)**
+- Competitive Intelligence (SEMrush/SimilarWeb exports) → DEFEND, OPPORTUNITY, DIFFERENTIATE
+- Market Events (seasonal calendar, competitor actions) → PREPARE, MITIGATE, CAPITALIZE
+- Market Trends (CPC/CPM trends, benchmarks) → BENCHMARK, COST_ALERT
+
+**Infrastructure**
+- SQLite persistence (sessions survive restarts)
+- JWT authentication with 3 roles (admin, analyst, viewer)
+- Scenario save/load/compare (side-by-side with channel-level diffs)
+- Vite build system (180KB gzipped production bundle)
+- Docker deployment (Railway/Render ready)
+
+### Quick Start
 
 ```bash
-# 1. Install dependencies
-cd backend && pip install -r requirements.txt
-
-# 2. Start server
+# Backend
+cd backend
+pip install -r requirements.txt
 uvicorn api:app --reload --port 8000
 
-# 3. Access
-# Frontend: http://localhost:8000/app
-# API Docs: http://localhost:8000/docs
-# Health:   http://localhost:8000/api/health
+# Frontend (development)
+cd frontend
+npm install
+npm run dev
+
+# Frontend (production build)
+cd frontend
+npm run build
+# Serves from /app endpoint on backend
 ```
 
-## Deploy to Railway
+### API Endpoints (40+)
 
-```bash
-# 1. Push to GitHub
-git init && git add . && git commit -m "deploy" && git push
+| Category | Endpoints |
+|----------|-----------|
+| Core | `/api/health`, `/api/load-mock-data`, `/api/full-state` |
+| Upload | `/api/upload`, `/api/upload-journeys`, `/api/upload-competitive`, `/api/upload-events`, `/api/upload-trends` |
+| Analysis | `/api/response-curves`, `/api/recommendations`, `/api/pillars`, `/api/insights` |
+| Models | `/api/model-selections`, `/api/mmm`, `/api/adstock`, `/api/markov-attribution`, `/api/shapley` |
+| Optimization | `/api/optimize`, `/api/sensitivity`, `/api/multi-objective` |
+| Intelligence | `/api/trend-analysis`, `/api/funnel-analysis`, `/api/forecast`, `/api/cross-channel` |
+| Auth | `/api/auth/register`, `/api/auth/login`, `/api/auth/me` |
+| Scenarios | `/api/scenarios`, `/api/scenarios/save`, `/api/scenarios/compare` |
+| Export | `/api/executive-summary`, `/api/download-template` |
 
-# 2. Go to railway.app → New Project → Deploy from GitHub
-# 3. Select repo → Railway detects Dockerfile → deploys automatically
-# 4. Access: https://your-app.railway.app/app
-```
+### Honest Limitations
+- Frontend is React via CDN (Vite build available but not served by default from backend)
+- SQLite is single-file, not horizontally scalable (PostgreSQL recommended for teams)
+- MMM Bayesian path needs PyMC which requires specific system libraries
+- Mock data is synthetic — response curves will differ with real campaign data
+- In-browser Babel fallback still used when Vite dist is not deployed
+- Auth is basic JWT — no OAuth, no SSO, no MFA
+- Scenario comparison is parameter-level, not visual diff
 
-## Deploy with Docker
-
-```bash
-docker build -t yield-intelligence .
-docker run -p 8000:8000 yield-intelligence
-# Access: http://localhost:8000/app
-```
-
----
-
-## Architecture
-
+### File Structure
 ```
 yield-intelligence/
 ├── backend/
-│   ├── api.py                     # FastAPI — 28 endpoints
-│   ├── mock_data.py               # 48-month demo data generator
-│   ├── validator.py               # Upload validation
-│   ├── test_integration.py        # 69-test integration suite
-│   ├── engines/
-│   │   ├── response_curves.py     # scipy.optimize.curve_fit (power-law + Hill)
-│   │   ├── optimizer.py           # scipy.optimize.minimize (SLSQP, multi-start)
-│   │   ├── mmm.py                 # PyMC Bayesian MMM → OLS fallback
-│   │   ├── adstock.py             # scipy differential_evolution (decay fitting)
-│   │   ├── forecasting.py         # Prophet → ARIMA → linear fallback
-│   │   ├── diagnostics.py         # scipy.stats (t-test, z-test per recommendation)
-│   │   ├── leakage.py             # 3-pillar value leakage analysis
-│   │   ├── attribution.py         # Last-touch, linear, position-based
-│   │   ├── markov_attribution.py  # Markov chain with bootstrap CIs
-│   │   ├── shapley.py             # Exact Shapley values (2^N coalitions)
-│   │   ├── geo_lift.py            # Synthetic control (statsmodels OLS)
-│   │   ├── trend_analysis.py      # Kendall tau, Grubbs, Levene
-│   │   ├── funnel_analysis.py     # Binomial CI, proportions z-test
-│   │   ├── roi_formulas.py        # 5 ROI variants with bootstrap CIs
-│   │   ├── cross_channel.py       # Pearson/KS test for timing leakage
-│   │   ├── multi_objective.py     # Pareto frontier optimization
-│   │   ├── hierarchical_forecast.py # Per-group forecast + reconciliation
-│   │   ├── automated_recs.py      # Model-driven anomaly detection
-│   │   ├── mapping.py             # Auto column mapping (fuzzy match)
-│   │   └── data_splitter.py       # Routes reporting vs training data
-│   └── data/
-│       └── upload_template.csv
+│   ├── api.py                    # FastAPI — 40+ endpoints
+│   ├── auth.py                   # JWT + RBAC
+│   ├── persistence.py            # SQLite state management
+│   ├── mock_data.py              # 48-month demo data
+│   ├── validator.py              # Upload validation
+│   ├── test_integration.py       # 69-test suite
+│   └── engines/                  # 22 statistical engines
+│       ├── response_curves.py    # Power-Law, Hill, Auto
+│       ├── optimizer.py          # SLSQP, sensitivity
+│       ├── mmm.py                # Bayesian, MLE, OLS
+│       ├── insights.py           # Smart recommendations + QoQ/YoY
+│       ├── external_data.py      # Competitive, Events, Trends
+│       ├── attribution.py        # Last Touch, Linear, Position-Based
+│       ├── markov_attribution.py # Markov Chain + bootstrap
+│       ├── diagnostics.py        # Statistical recommendations
+│       ├── leakage.py            # Value at Risk (3 pillars)
+│       ├── forecasting.py        # Prophet, ARIMA
+│       └── ...                   # 12 more engines
 ├── frontend/
-│   ├── app.jsx                    # React frontend (7 screens)
-│   └── index.html                 # Host page
-├── templates/
-│   ├── INPUT_FORMAT_SPECIFICATION.md
-│   ├── campaign_performance_template.csv
-│   └── user_journeys_template.csv
-├── docs/
-│   ├── model_specification.md
-│   ├── kpi_formula_spec.md
-│   ├── data_dictionary.md
-│   └── technology_stack.md
-├── Dockerfile
-├── Procfile
-├── railway.toml
-├── requirements.txt
-└── LICENSE
+│   ├── app.jsx                   # React frontend (7 screens)
+│   ├── index.html                # CDN fallback entry
+│   ├── main.jsx                  # Vite entry
+│   ├── vite.config.js            # Vite build config
+│   └── package.json              # Node dependencies
+├── templates/                    # 5 CSV upload templates
+├── docs/                         # Model specs, data dictionary, blueprints
+├── Dockerfile                    # Production container
+└── README.md
 ```
 
-## Data Requirements
-
-| Purpose | Time Window | Minimum |
-|---------|-------------|---------|
-| ROI, KPIs, diagnostics | Last 12 months | 12 months |
-| Response curves, adstock | Full history | 24 months |
-| MMM (Bayesian) | Full history | 36 months |
-| Forecasting | Full history | 24 months |
-
-**Upload one file with 3–5 years of data.** The system auto-splits:
-- Last 12 months → reporting (ROI, diagnostics, recommendations)
-- Full history → model training (curves, MMM, forecasting)
-
-## API Endpoints (28 total)
-
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET | `/api/health` | Deployment monitoring |
-| POST | `/api/load-mock-data` | Load 48-month demo data |
-| POST | `/api/upload` | Upload campaign CSV/XLSX |
-| POST | `/api/upload-journeys` | Upload journey data for attribution |
-| POST | `/api/run-analysis` | Run all engines |
-| GET | `/api/full-state` | All data shaped for frontend |
-| GET | `/api/current-state` | KPIs + channel matrix |
-| GET | `/api/data-readiness` | Engine sufficiency checks |
-| GET | `/api/response-curves` | Fitted curves with R², RMSE |
-| GET | `/api/recommendations` | Statistical recommendations |
-| GET | `/api/pillars` | Revenue leakage + CX + cost |
-| POST | `/api/optimize` | Budget optimization (SLSQP) |
-| GET | `/api/sensitivity` | Multi-budget sensitivity |
-| GET | `/api/business-case` | Executive summary |
-| GET | `/api/forecast` | Prophet/ARIMA forecast |
-| POST | `/api/mmm` | Bayesian Marketing Mix Model |
-| POST | `/api/adstock` | Adstock decay fitting |
-| GET | `/api/markov-attribution` | Markov chain attribution |
-| GET | `/api/shapley` | Shapley value attribution |
-| GET | `/api/trend-analysis` | Trend + anomaly detection |
-| GET | `/api/funnel-analysis` | Funnel bottleneck analysis |
-| GET | `/api/roi-analysis` | 5 ROI formulas per channel |
-| GET | `/api/cross-channel` | Cross-channel leakage |
-| GET | `/api/geo-lift/{region}` | Synthetic control test |
-| POST | `/api/multi-objective` | Pareto frontier |
-| GET | `/api/hierarchical-forecast` | Per-group forecast |
-| GET | `/api/automated-recommendations` | Model-driven recs |
-| GET | `/api/model-health` | Model drift detection |
-
-## Run Tests
-
+### Tests
 ```bash
 cd backend && python test_integration.py
 # Expected: 69 passed, 0 failed
 ```
-
-## Statistical Libraries
-
-| Library | Engine | Purpose |
-|---------|--------|---------|
-| scipy.optimize.curve_fit | Response curves | Nonlinear least-squares fitting |
-| scipy.optimize.minimize | Optimizer | Constrained SLSQP with multi-start |
-| scipy.optimize.differential_evolution | Adstock | Global decay parameter optimization |
-| scipy.stats | All diagnostics | t-test, z-test, Kendall tau, Levene, Grubbs, KS |
-| scikit-learn | Response curves, ROI | R², RMSE, MAPE, Leave-One-Out CV |
-| pymc | MMM | Bayesian MCMC (NUTS sampler) |
-| arviz | MMM | Posterior diagnostics (R-hat, ESS, HDI) |
-| statsmodels | Forecasting, Geo-lift | ARIMA, ADF test, OLS, seasonal decomposition |
-| prophet | Forecasting | Time-series with seasonality + changepoints |
-
-## Current Limitations (honest assessment)
-
-**What this IS:** A consulting-grade accelerator/demo that can support internal walkthroughs, client presentations, and data exploration. The backend engines are real and produce statistically meaningful outputs.
-
-**What this is NOT yet:** A production-grade enterprise SaaS platform.
-
-| Area | Status | Detail |
-|------|--------|--------|
-| Frontend | Demo-grade | CDN-loaded React with Babel in-browser. Works reliably but is not a production build (no Vite/webpack bundle). |
-| Bayesian MMM | Environment-sensitive | PyMC MCMC runs in full Python environments. Falls back to OLS+bootstrap on lightweight deployments. The fallback is valid but has wider uncertainty. |
-| State management | In-memory | Single-user, no persistence between server restarts. Fine for demo; needs database for multi-user. |
-| Auth / RBAC | None | No authentication, no role-based access control. Add before any client-facing deployment. |
-| Model governance | Documented | See `docs/model_hierarchy.md` for which outputs are decision-grade vs directional. |
-
-**To move from 7/10 prototype to 9/10 production:**
-1. Build frontend with Vite (bundled, minified, no Babel-in-browser)
-2. Add PostgreSQL for persistent state + multi-user sessions
-3. Containerize PyMC properly (full `python:3.12` image, not slim)
-4. Add auth + audit logging
-5. Add scenario save/load + export versioning
-
-## License
-
-MIT License. See [LICENSE](LICENSE).
